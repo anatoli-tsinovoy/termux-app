@@ -215,6 +215,17 @@ public class TerminalBitmap {
 
                 imageHeight = options.outHeight;
                 imageWidth = options.outWidth;
+                if (imageWidth < 1 || imageHeight < 1) {
+                    // The image dimensions are not known if the image data could not be decoded.
+                    // Bailing out early is required since a `0` dimension would otherwise result in
+                    // a division by `0` while calculating the factors below and in the `scaleFactor`
+                    // loop below never terminating.
+                    Logger.logError(terminalBuffer.getClient(), LOG_TAG,
+                        "Create terminal bitmap " + bitmapNum + " from image byte array failed:" +
+                            " Decoded bitmap bounds " + imageWidth + "x" + imageHeight + " are not valid");
+                    return null;
+                }
+
                 if (shouldPreserveAspectRatio) {
                     double wFactor = 9999.0;
                     double hFactor = 9999.0;
