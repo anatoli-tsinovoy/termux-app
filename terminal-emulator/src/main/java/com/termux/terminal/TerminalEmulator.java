@@ -2975,7 +2975,7 @@ public final class TerminalEmulator {
                                 iTermImage.shouldPreserveAspectRatio());
 
                             int col = cursorDelta[1] + mCursorCol;
-                            if (col < mColumns - 1) {
+                            if (col < mColumns) {
                                 cursorDelta[0] -= 1;
                             } else {
                                 col = 0;
