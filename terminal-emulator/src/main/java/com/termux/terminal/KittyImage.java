@@ -152,7 +152,7 @@ public class KittyImage {
     /** The max value for the `i` key, since image ids are 32-bit unsigned integers. */
     public static final long IMAGE_ID__MAX = 4294967295L;
 
-    /** The placement id value for the `p` key if it was not passed. Placement id `0` is not valid. */
+    /** The placement id value for the `p` key if it was not passed. Placement id `0` is unspecified. */
     public static final long PLACEMENT_ID__NONE = 0;
 
     /** The max value for the `p` key, since placement ids are 32-bit unsigned integers. */
@@ -652,7 +652,7 @@ public class KittyImage {
                 break;
             }
             case 'p': { // The placement id.
-                long value = readNumberArg(argValue, 1, PLACEMENT_ID__MAX);
+                long value = readNumberArg(argValue, 0, PLACEMENT_ID__MAX);
                 if (value < 0) return setStateFailed(ERROR__EINVAL, "invalid placement id");
                 mPlacementId = value;
                 break;

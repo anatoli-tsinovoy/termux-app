@@ -709,6 +709,35 @@ public final class TerminalBuffer {
 
 
     /**
+     * Build a {@link TerminalBitmap} for a placement of a kitty graphics image without registering
+     * it in this buffer's bitmap map. The bitmap is registered separately so callers can remove an
+     * older placement only after the replacement has been built successfully.
+     */
+    synchronized TerminalBitmap buildTerminalBitmapForKittyImage(int format, byte[] image,
+                                                                  int pixelWidth, int pixelHeight,
+                                                                  int sourceX, int sourceY,
+                                                                  int sourceWidth, int sourceHeight,
+                                                                  int x, int y, int cellW, int cellH,
+                                                                  int width, int height, boolean shouldPreserveAspectRatio,
+                                                                  long kittyImageId, long kittyPlacementId) {
+        int bitmapNum = getFreeTerminalBitmapNum();
+        if (bitmapNum < TERMINAL_BITMAP__NUM_START) {
+            Logger.logError(mClient, LOG_TAG, "Cannot create more than " + TERMINAL_BITMAP__NUM_END + " bitmaps");
+            return null;
+        }
+
+        TerminalBitmap terminalBitmap = TerminalBitmap.buildForKittyImage(this, bitmapNum, format, image,
+            pixelWidth, pixelHeight, sourceX, sourceY, sourceWidth, sourceHeight, x, y,
+            cellW, cellH, width, height, shouldPreserveAspectRatio);
+
+        if (terminalBitmap == null || terminalBitmap.getBitmap() == null) {
+            return null;
+        }
+        terminalBitmap.setKittyImage(kittyImageId, kittyPlacementId);
+        return terminalBitmap;
+    }
+
+    /**
      * Add a {@link TerminalBitmap} to the screen for a placement of a kitty graphics image.
      *
      * @param format The kitty graphics image format, check {@link KittyImage#FORMAT__PNG} and
@@ -728,6 +757,8 @@ public final class TerminalBuffer {
      * value and the number of columns as the second value, or `{0, 0}` if the bitmap could not be
      * created.
      */
+
+
     public synchronized int[] addTerminalBitmapForKittyImage(int format, byte[] image,
                                                              int pixelWidth, int pixelHeight,
                                                              int sourceX, int sourceY,
@@ -735,20 +766,12 @@ public final class TerminalBuffer {
                                                              int x, int y, int cellW, int cellH,
                                                              int width, int height, boolean shouldPreserveAspectRatio,
                                                              long kittyImageId, long kittyPlacementId) {
-        int bitmapNum = getFreeTerminalBitmapNum();
-        if (bitmapNum < TERMINAL_BITMAP__NUM_START) {
-            Logger.logError(mClient, LOG_TAG, "Cannot create more than " + TERMINAL_BITMAP__NUM_END + " bitmaps");
+        TerminalBitmap terminalBitmap = buildTerminalBitmapForKittyImage(format, image,
+            pixelWidth, pixelHeight, sourceX, sourceY, sourceWidth, sourceHeight, x, y, cellW, cellH,
+            width, height, shouldPreserveAspectRatio, kittyImageId, kittyPlacementId);
+        if (terminalBitmap == null) {
             return new int[] {0, 0};
         }
-
-        TerminalBitmap terminalBitmap = TerminalBitmap.buildForKittyImage(this, bitmapNum, format, image,
-            pixelWidth, pixelHeight, sourceX, sourceY, sourceWidth, sourceHeight, x, y,
-            cellW, cellH, width, height, shouldPreserveAspectRatio);
-
-        if (terminalBitmap == null || terminalBitmap.getBitmap() == null) {
-            return new int[] {0, 0};
-        }
-        terminalBitmap.setKittyImage(kittyImageId, kittyPlacementId);
         addTerminalBitmap(terminalBitmap);
 
         doTerminalBitmapsGC(30000);

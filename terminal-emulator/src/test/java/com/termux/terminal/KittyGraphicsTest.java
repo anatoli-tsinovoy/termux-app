@@ -126,6 +126,23 @@ public class KittyGraphicsTest extends TerminalTestCase {
             "\033_Ga=t,f=100,t=d,i=1,m=0,q=2;" + PNG_BASE64 + "\033\\", "");
     }
 
+    public void testPlacementIdIsIncludedInResponsesAndZeroIsUnspecified() {
+        withTerminalSized(20, 4);
+
+        assertEnteringStringGivesResponse(
+            "\033_Ga=t,f=100,t=d,i=600,p=7,m=0;" + PNG_BASE64 + "\033\\",
+            "\033_Gi=600,p=7;OK\033\\");
+        assertEnteringStringGivesResponse(
+            "\033_Ga=t,f=100,t=d,i=601,p=7,m=0,o=z;" + PNG_BASE64 + "\033\\",
+            "\033_Gi=601,p=7;ENOTSUP:unsupported compression\033\\");
+
+        // An explicit p=0 has the same unspecified meaning as omitting the key.
+        assertEnteringStringGivesResponse(
+            "\033_Ga=t,f=100,t=d,i=602,p=0,m=0;" + PNG_BASE64 + "\033\\",
+            "\033_Gi=602;OK\033\\");
+    }
+
+
     public void testQuietLevelsForErrorResponse() {
         withTerminalSized(10, 5);
 
@@ -192,6 +209,40 @@ public class KittyGraphicsTest extends TerminalTestCase {
         assertCursorAt(0, 0);
         enterString("ok").assertLinesAre("ok                  ", "                    ",
             "                    ", "                    ");
+    }
+
+    public void testImageExceedingRetainedSourceQuotaRespondsEnospcAndPreservesOldData() {
+        withTerminalSized(20, 4);
+        enterString("\033_Ga=t,f=100,t=d,i=603,m=0,q=2;" + PNG_BASE64 + "\033\\");
+
+        int retainedSourceQuota = 8 * 1024 * 1024;
+        byte[] oversizedImage = new byte[retainedSourceQuota + 1];
+        String oversizedPayload = Base64.getEncoder().encodeToString(oversizedImage);
+        assertEnteringStringGivesResponse(
+            "\033_Ga=t,f=100,t=d,i=603,m=0;" + oversizedPayload + "\033\\",
+            "\033_Gi=603;ENOSPC:image data exceeds max total size " + retainedSourceQuota + "\033\\");
+        assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(603));
+    }
+
+    public void testRetransmitDeletesPlacementsAcrossMainAndAlternateBuffers() {
+        withTerminalSized(6, 4);
+        enterString("\033_Ga=t,f=100,t=d,i=604,m=0,q=2;" + PNG_BASE64 + "\033\\");
+
+        TerminalBuffer mainBuffer = mTerminal.getScreen();
+        TerminalBuffer alternateBuffer = mTerminal.mAltBuffer;
+        addPlacement(mainBuffer, 0, true, 604, 1, 0, 0, 2);
+        enterString("\033[?1049h");
+        addPlacement(alternateBuffer, 0, true, 604, 2, 0, 0, 2);
+        enterString("\033[?1049l");
+        assertTrue(hasBitmap(mainBuffer, 0));
+        assertTrue(hasBitmap(alternateBuffer, 0));
+
+        // Storage succeeds, so the old placements are removed before the failed JVM-only display.
+        assertEnteringStringGivesResponse(
+            "\033_Ga=T,f=100,t=d,i=604,m=0,C=1;" + PNG_BASE64 + "\033\\",
+            "\033_Gi=604;EBADPNG:displaying image failed\033\\");
+        assertFalse(hasBitmap(mainBuffer, 0));
+        assertFalse(hasBitmap(alternateBuffer, 0));
     }
 
     /* Raw pixel data formats (`f=24` and `f=32`). */
@@ -655,7 +706,7 @@ public class KittyGraphicsTest extends TerminalTestCase {
         // The image data is not sent again, so a failure to display it can only come from the stored
         // image being looked up and used. Creating the bitmap always fails in unit tests.
         assertEnteringStringGivesResponse("\033_Ga=p,i=200,p=1,c=4,r=2,z=0,C=1\033\\",
-            "\033_Gi=200;EBADPNG:displaying image failed\033\\");
+            "\033_Gi=200,p=1;EBADPNG:displaying image failed\033\\");
 
         // The stored image is kept so that it can be displayed again.
         assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(200));
@@ -664,13 +715,33 @@ public class KittyGraphicsTest extends TerminalTestCase {
     public void testPutForUnknownImageIdRespondsError() {
         withTerminalSized(20, 4);
         assertEnteringStringGivesResponse("\033_Ga=p,i=201,p=1,c=4,r=2,C=1\033\\",
-            "\033_Gi=201;ENOENT:no image transmitted for image id\033\\");
+            "\033_Gi=201,p=1;ENOENT:no image transmitted for image id\033\\");
 
         // The image data is freed by a `d=I` delete, after which it cannot be displayed again.
         enterString("\033_Ga=t,f=100,t=d,i=201,m=0,q=2;" + PNG_BASE64 + "\033\\");
         enterString("\033_Ga=d,d=I,i=201,q=2\033\\");
         assertEnteringStringGivesResponse("\033_Ga=p,i=201,p=1,C=1\033\\",
-            "\033_Gi=201;ENOENT:no image transmitted for image id\033\\");
+            "\033_Gi=201,p=1;ENOENT:no image transmitted for image id\033\\");
+    }
+
+    public void testFailedPlacementKeepsTheSameKeyedPairAcrossBuffers() {
+        withTerminalSized(6, 4);
+        enterString("\033_Ga=t,f=100,t=d,i=605,m=0,q=2;" + PNG_BASE64 + "\033\\");
+
+        TerminalBuffer mainBuffer = mTerminal.getScreen();
+        TerminalBuffer alternateBuffer = mTerminal.mAltBuffer;
+        addPlacement(mainBuffer, 0, true, 605, 7, 0, 0, 2);
+        enterString("\033[?1049h");
+        addPlacement(alternateBuffer, 0, true, 605, 7, 0, 0, 2);
+        enterString("\033[?1049l");
+        assertTrue(hasBitmap(mainBuffer, 0));
+        assertTrue(hasBitmap(alternateBuffer, 0));
+
+        // Bitmap creation fails in JVM tests, so the existing keyed pair must remain in both buffers.
+        assertEnteringStringGivesResponse("\033_Ga=p,i=605,p=7,C=1\033\\",
+            "\033_Gi=605,p=7;EBADPNG:displaying image failed\033\\");
+        assertTrue(hasBitmap(mainBuffer, 0));
+        assertTrue(hasBitmap(alternateBuffer, 0));
     }
 
     public void testPutWithoutImageIdIsIgnored() {
@@ -690,17 +761,17 @@ public class KittyGraphicsTest extends TerminalTestCase {
         // Creating the bitmap always fails in unit tests, so reaching `EBADPNG` means the source
         // rectangle passed validation and the placement was attempted.
         assertEnteringStringGivesResponse("\033_Ga=p,i=300,p=1,x=0,y=0,w=1,h=1,c=1,r=1,C=1\033\\",
-            "\033_Gi=300;EBADPNG:displaying image failed\033\\");
+            "\033_Gi=300,p=1;EBADPNG:displaying image failed\033\\");
         assertEnteringStringGivesResponse("\033_Ga=p,i=300,p=1,x=1,y=1,w=1,h=1,c=1,r=1,C=1\033\\",
-            "\033_Gi=300;EBADPNG:displaying image failed\033\\");
+            "\033_Gi=300,p=1;EBADPNG:displaying image failed\033\\");
         assertEnteringStringGivesResponse("\033_Ga=p,i=300,p=1,x=0,y=0,w=2,h=2,c=2,r=2,C=1\033\\",
-            "\033_Gi=300;EBADPNG:displaying image failed\033\\");
+            "\033_Gi=300,p=1;EBADPNG:displaying image failed\033\\");
 
         // The `w` and `h` keys default to the rest of the image after the `x` and `y` offset.
         assertEnteringStringGivesResponse("\033_Ga=p,i=300,p=1,x=1,y=1,c=1,r=1,C=1\033\\",
-            "\033_Gi=300;EBADPNG:displaying image failed\033\\");
+            "\033_Gi=300,p=1;EBADPNG:displaying image failed\033\\");
         assertEnteringStringGivesResponse("\033_Ga=p,i=300,p=1,x=1,c=1,r=2,C=1\033\\",
-            "\033_Gi=300;EBADPNG:displaying image failed\033\\");
+            "\033_Gi=300,p=1;EBADPNG:displaying image failed\033\\");
     }
 
     public void testSourceRectangleOutsideTheImageIsRejected() {
@@ -709,21 +780,21 @@ public class KittyGraphicsTest extends TerminalTestCase {
 
         // The width extends past the right edge of the image.
         assertEnteringStringGivesResponse("\033_Ga=p,i=301,p=1,x=1,y=0,w=2,h=1,c=1,r=1,C=1\033\\",
-            "\033_Gi=301;EINVAL:source rectangle x 1 and width 2 exceed image width 2\033\\");
+            "\033_Gi=301,p=1;EINVAL:source rectangle x 1 and width 2 exceed image width 2\033\\");
 
         // The height extends past the bottom edge of the image.
         assertEnteringStringGivesResponse("\033_Ga=p,i=301,p=1,x=0,y=1,w=1,h=2,c=1,r=1,C=1\033\\",
-            "\033_Gi=301;EINVAL:source rectangle y 1 and height 2 exceed image height 2\033\\");
+            "\033_Gi=301,p=1;EINVAL:source rectangle y 1 and height 2 exceed image height 2\033\\");
 
         // The offset itself is outside the image.
         assertEnteringStringGivesResponse("\033_Ga=p,i=301,p=1,x=2,y=0,c=1,r=1,C=1\033\\",
-            "\033_Gi=301;EINVAL:source rectangle x 2 is outside image width 2\033\\");
+            "\033_Gi=301,p=1;EINVAL:source rectangle x 2 is outside image width 2\033\\");
         assertEnteringStringGivesResponse("\033_Ga=p,i=301,p=1,x=0,y=2,c=1,r=1,C=1\033\\",
-            "\033_Gi=301;EINVAL:source rectangle y 2 is outside image height 2\033\\");
+            "\033_Gi=301,p=1;EINVAL:source rectangle y 2 is outside image height 2\033\\");
 
         // A source rectangle far larger than the image.
         assertEnteringStringGivesResponse("\033_Ga=p,i=301,p=1,x=0,y=0,w=100,h=100,c=4,r=4,C=1\033\\",
-            "\033_Gi=301;EINVAL:source rectangle x 0 and width 100 exceed image width 2\033\\");
+            "\033_Gi=301,p=1;EINVAL:source rectangle x 0 and width 100 exceed image width 2\033\\");
 
         // The image is not deleted by a rejected placement.
         assertEquals(16, mTerminal.getKittyImageDataLength(301));
@@ -764,7 +835,7 @@ public class KittyGraphicsTest extends TerminalTestCase {
         withTerminalSized(20, 4);
         enterString("\033_Ga=t,f=100,t=d,i=304,m=0,q=2;" + PNG_BASE64 + "\033\\");
         assertEnteringStringGivesResponse("\033_Ga=p,i=304,p=1,x=0,y=0,w=100,h=100,c=4,r=4,C=1\033\\",
-            "\033_Gi=304;EBADPNG:displaying image failed\033\\");
+            "\033_Gi=304,p=1;EBADPNG:displaying image failed\033\\");
     }
 
 
@@ -959,8 +1030,12 @@ public class KittyGraphicsTest extends TerminalTestCase {
      */
     private void addPlacement(int bitmapNum, boolean isKittyImage, long imageId, long placementId,
                               int row, int column, int columns) {
-        TerminalBuffer screen = mTerminal.getScreen();
+        addPlacement(mTerminal.getScreen(), bitmapNum, isKittyImage, imageId, placementId,
+            row, column, columns);
+    }
 
+    private void addPlacement(TerminalBuffer screen, int bitmapNum, boolean isKittyImage,
+                              long imageId, long placementId, int row, int column, int columns) {
         TerminalBitmap terminalBitmap = new TerminalBitmap(null, bitmapNum, /* bitmap */ null,
             INITIAL_CELL_WIDTH_PIXELS, INITIAL_CELL_HEIGHT_PIXELS, /* scrollLines */ 1,
             new int[] {1, columns});
@@ -976,7 +1051,11 @@ public class KittyGraphicsTest extends TerminalTestCase {
 
     /** Whether a {@link TerminalBitmap} is still loaded for a bitmap number. */
     private boolean hasBitmap(int bitmapNum) {
-        return mTerminal.getScreen().getTerminalBitmap(TextStyle.encodeTerminalBitmap(bitmapNum, 0, 0)) != null;
+        return hasBitmap(mTerminal.getScreen(), bitmapNum);
+    }
+
+    private boolean hasBitmap(TerminalBuffer screen, int bitmapNum) {
+        return screen.getTerminalBitmap(TextStyle.encodeTerminalBitmap(bitmapNum, 0, 0)) != null;
     }
 
     /** Whether the row still contains any {@link TerminalBitmap} cell. */

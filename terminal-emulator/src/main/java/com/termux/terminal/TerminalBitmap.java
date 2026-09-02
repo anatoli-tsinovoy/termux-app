@@ -250,9 +250,17 @@ public class TerminalBitmap {
                 int[] newSize = getScaledImageSize(imageWidth, imageHeight, width, height, shouldPreserveAspectRatio);
                 newWidth = newSize[0];
                 newHeight = newSize[1];
+                if (newWidth < 1 || newHeight < 1) {
+                    Logger.logError(terminalBuffer.getClient(), LOG_TAG,
+                        "Create terminal bitmap " + bitmapNum + " from image byte array failed:" +
+                            " The scaled size " + newWidth + "x" + newHeight + " is not valid");
+                    return null;
+                }
 
                 int scaleFactor = 1;
-                while (imageHeight >= 2 * newHeight * scaleFactor && imageWidth >= 2 * newWidth * scaleFactor) {
+                while (imageHeight / 2 >= (long) newHeight * scaleFactor &&
+                    imageWidth / 2 >= (long) newWidth * scaleFactor) {
+                    if (scaleFactor > Integer.MAX_VALUE / 2) break;
                     scaleFactor = scaleFactor * 2;
                 }
 
@@ -429,11 +437,13 @@ public class TerminalBitmap {
             }
 
             if (height > 0 || width > 0) {
-                int[] newSize = getScaledImageSize(bitmapWidth, bitmapHeight, width, height, shouldPreserveAspectRatio);
-                if (newSize[0] < 1 || newSize[1] < 1) {
+                int[] newSize = getKittyPlacementSize(bitmapWidth, bitmapHeight, width, height,
+                    shouldPreserveAspectRatio,
+                    getTerminalWidthPixels(terminalBuffer.mColumns, x, cellWidth));
+                if (newSize == null) {
                     Logger.logError(terminalBuffer.getClient(), LOG_TAG,
                         "Create terminal bitmap " + bitmapNum + " for kitty image failed:" +
-                            " The scaled size " + newSize[0] + "x" + newSize[1] + " is not valid");
+                            " The requested size " + width + "x" + height + " is not valid");
                     return null;
                 }
 
@@ -575,8 +585,8 @@ public class TerminalBitmap {
 
     /** Whether a bitmap of the dimensions can be drawn as per {@link #MAX_BITMAP_SIZE}. */
     private static boolean isBitmapSizeValid(TerminalSessionClient client, int bitmapNum, int bitmapWidth, int bitmapHeight) {
-        long bitmapSize = (long) bitmapWidth * bitmapHeight * 4;
-        if (bitmapSize > MAX_BITMAP_SIZE) {
+        long bitmapSize = getBitmapSizeInBytes(bitmapWidth, bitmapHeight);
+        if (bitmapSize < 0 || bitmapSize > MAX_BITMAP_SIZE) {
             Logger.logError(client, LOG_TAG,
                 "The bitmap for terminal bitmap " + bitmapNum + " with" +
                     " dimensions " + bitmapWidth + "x" + bitmapHeight +
@@ -586,17 +596,40 @@ public class TerminalBitmap {
         return true;
     }
 
+    /** Get a bitmap's ARGB_8888 byte count without overflowing. */
+    private static long getBitmapSizeInBytes(int bitmapWidth, int bitmapHeight) {
+        if (bitmapWidth < 1 || bitmapHeight < 1) return -1;
+
+        long pixelCount = (long) bitmapWidth * bitmapHeight;
+        return pixelCount > Long.MAX_VALUE / 4 ? Long.MAX_VALUE : pixelCount * 4;
+    }
+
+    /** Whether a bitmap size fits in an {@link #MAX_BITMAP_SIZE} ARGB_8888 bitmap. */
+    private static boolean isBitmapSizeWithinLimit(int bitmapWidth, int bitmapHeight) {
+        long bitmapSize = getBitmapSizeInBytes(bitmapWidth, bitmapHeight);
+        return bitmapSize >= 0 && bitmapSize <= MAX_BITMAP_SIZE;
+    }
+
     /**
      * Create an {@link Bitmap.Config#ARGB_8888} {@link Bitmap} from raw `RGB` or `RGBA` pixel data
      * of a kitty graphics image. The alpha channel is expected to not be premultiplied.
      */
     private static Bitmap createBitmapFromRawPixels(TerminalSessionClient client, int bitmapNum, byte[] pixels,
                                                     int bytesPerPixel, int pixelWidth, int pixelHeight) {
-        if (bytesPerPixel < 3 || pixelWidth < 1 || pixelHeight < 1 ||
-            pixels.length != pixelWidth * pixelHeight * bytesPerPixel) {
+        long expectedPixelDataLength = -1;
+        if (bytesPerPixel > 0 && pixelWidth > 0 && pixelHeight > 0) {
+            long pixelCount = (long) pixelWidth * pixelHeight;
+            if (pixelCount <= Long.MAX_VALUE / bytesPerPixel) {
+                expectedPixelDataLength = pixelCount * bytesPerPixel;
+            }
+        }
+
+        if (bytesPerPixel < 3 || pixelWidth < 1 || pixelHeight < 1 || pixels == null ||
+            expectedPixelDataLength != pixels.length) {
+            int pixelDataLength = pixels == null ? -1 : pixels.length;
             Logger.logError(client, LOG_TAG, "Create bitmap for" +
                 " terminal bitmap " + bitmapNum + " from raw pixels failed:" +
-                " Pixel data of length " + pixels.length +
+                " Pixel data of length " + pixelDataLength +
                 " does not match dimensions " + pixelWidth + "x" + pixelHeight +
                 " with " + bytesPerPixel + " bytes per pixel");
             return null;
@@ -607,7 +640,7 @@ public class TerminalBitmap {
         }
 
         try {
-            int[] colors = new int[pixelWidth * pixelHeight];
+            int[] colors = new int[(int) ((long) pixelWidth * pixelHeight)];
             for (int i = 0; i < colors.length; i++) {
                 int offset = i * bytesPerPixel;
                 int red = pixels[offset] & 0xff;
@@ -627,41 +660,95 @@ public class TerminalBitmap {
         }
     }
 
+    private static long getTerminalWidthPixels(int columns, int x, int cellWidth) {
+        long availableColumns = (long) columns - x;
+        if (availableColumns < 1 || cellWidth < 1 ||
+            availableColumns > Long.MAX_VALUE / cellWidth) {
+            return -1;
+        }
+        return availableColumns * cellWidth;
+    }
+
+    /**
+     * Get Kitty placement dimensions that are safe to pass to
+     * {@link Bitmap#createScaledBitmap(Bitmap, int, int, boolean)}.
+     *
+     * <p>The terminal can only display the part of a placement within its remaining columns, so
+     * its width is constrained before scaling. If the placement requests aspect-ratio preserving
+     * scaling, constraining the width also constrains the height. Exact-size placements keep their
+     * requested height, as they do when {@link #resizeBitmapConstrained(String, String,
+     * TerminalSessionClient, Bitmap, int, int, int, int, int)} crops them later. A placement that
+     * cannot fit in the bitmap size limit is rejected rather than allocated.</p>
+     *
+     * @return the safe dimensions, or {@code null} if they cannot be represented or allocated.
+     */
+    static int[] getKittyPlacementSize(int imageWidth, int imageHeight,
+                                       int width, int height, boolean shouldPreserveAspectRatio,
+                                       long terminalWidthPixels) {
+        if (terminalWidthPixels < 1) return null;
+
+        int[] newSize = getScaledImageSize(imageWidth, imageHeight, width, height,
+            shouldPreserveAspectRatio);
+        if (newSize[0] < 1 || newSize[1] < 1) return null;
+
+        if ((long) newSize[0] > terminalWidthPixels) {
+            int constrainedWidth = (int) Math.min(terminalWidthPixels, Integer.MAX_VALUE);
+            if (shouldPreserveAspectRatio) {
+                long constrainedHeight = (long) newSize[1] * constrainedWidth / newSize[0];
+                if (constrainedHeight < 1 || constrainedHeight > Integer.MAX_VALUE) return null;
+                newSize = new int[] {constrainedWidth, (int) constrainedHeight};
+            } else {
+                newSize[0] = constrainedWidth;
+            }
+        }
+
+        return isBitmapSizeWithinLimit(newSize[0], newSize[1]) ? newSize : null;
+    }
+
     /**
      * Get the size to scale an image to so that it is displayed in the requested `width` and
      * `height` in pixels, where a value `<= 0` means that the respective dimension of the image
      * itself should be used.
      *
      * @return Returns an array with the new width as the first value and the new height as the
-     * second value.
+     * second value. A zero dimension means that the requested size cannot be represented.
      */
     private static int[] getScaledImageSize(int imageWidth, int imageHeight,
                                             int width, int height, boolean shouldPreserveAspectRatio) {
-        int newWidth = width;
-        int newHeight = height;
+        if (imageWidth < 1 || imageHeight < 1) return new int[] {0, 0};
 
+        long newWidth;
+        long newHeight;
         if (shouldPreserveAspectRatio) {
-            double wFactor = 9999.0;
-            double hFactor = 9999.0;
-            if (width > 0) {
-                wFactor = (double) width / imageWidth;
-            }
-            if (height > 0) {
-                hFactor = (double) height / imageHeight;
-            }
-            double factor = Math.min(wFactor, hFactor);
-            newWidth = (int) (factor * imageWidth);
-            newHeight = (int) (factor * imageHeight);
-        } else {
-            if (height <= 0) {
+            if (width > 0 && height > 0) {
+                // Each product is bounded by (2^31 - 1)^2 and therefore fits in a long.
+                if ((long) width * imageHeight <= (long) height * imageWidth) {
+                    newWidth = width;
+                    newHeight = (long) width * imageHeight / imageWidth;
+                } else {
+                    newWidth = (long) height * imageWidth / imageHeight;
+                    newHeight = height;
+                }
+            } else if (width > 0) {
+                newWidth = width;
+                newHeight = (long) width * imageHeight / imageWidth;
+            } else if (height > 0) {
+                newWidth = (long) height * imageWidth / imageHeight;
+                newHeight = height;
+            } else {
+                newWidth = imageWidth;
                 newHeight = imageHeight;
             }
-            if (width <= 0) {
-                newWidth = imageWidth;
-            }
+        } else {
+            newWidth = width > 0 ? width : imageWidth;
+            newHeight = height > 0 ? height : imageHeight;
         }
 
-        return new int[] {newWidth, newHeight};
+        if (newWidth < 1 || newHeight < 1 ||
+            newWidth > Integer.MAX_VALUE || newHeight > Integer.MAX_VALUE) {
+            return new int[] {0, 0};
+        }
+        return new int[] {(int) newWidth, (int) newHeight};
     }
 
 
@@ -790,10 +877,9 @@ public class TerminalBitmap {
 
     public static Bitmap resizeBitmap(String logTag, String label, TerminalSessionClient client, Bitmap bitmap,
                                       int bitmapWidth, int bitmapHeight) {
-        
         Bitmap newBitmap;
         try {
-            int newBitmapSize = bitmapWidth * bitmapHeight * 4;
+            long newBitmapSize = getBitmapSizeInBytes(bitmapWidth, bitmapHeight);
             if (newBitmapSize < 0 || newBitmapSize > MAX_BITMAP_SIZE) {
                 Logger.logError(client, logTag, "The new " + label + " bitmap after resize with" +
                     " width " + bitmapWidth + " and height " + bitmapHeight +
@@ -801,14 +887,25 @@ public class TerminalBitmap {
                 return null;
             }
 
-            int[] pixels = new int[bitmap.getAllocationByteCount()];
-            bitmap.getPixels(pixels, 0, bitmap.getWidth(), 0, 0, bitmap.getWidth(), bitmap.getHeight());
+            int sourceWidth = bitmap.getWidth();
+            int sourceHeight = bitmap.getHeight();
+            int newWidth = Math.min(sourceWidth, bitmapWidth);
+            int newHeight = Math.min(sourceHeight, bitmapHeight);
+            long copiedPixelCount = (long) newWidth * newHeight;
+            if (newWidth < 1 || newHeight < 1 || copiedPixelCount > Integer.MAX_VALUE) {
+                Logger.logError(client, logTag, "Resize " + label + " bitmap to" +
+                    " width " + bitmapWidth + " and height " + bitmapHeight +
+                    " failed: Invalid copied dimensions " + newWidth + "x" + newHeight);
+                return null;
+            }
+
+            // Use a compact pixel buffer for only the source region copied below. The newly created
+            // bitmap starts transparent, so pixels outside that region retain transparent padding.
+            int[] pixels = new int[(int) copiedPixelCount];
+            bitmap.getPixels(pixels, 0, newWidth, 0, 0, newWidth, newHeight);
 
             newBitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888);
-
-            int newWidth = Math.min(bitmap.getWidth(), bitmapWidth);
-            int newHeight = Math.min(bitmap.getHeight(), bitmapHeight);
-            newBitmap.setPixels(pixels, 0, bitmap.getWidth(), 0, 0, newWidth, newHeight);
+            newBitmap.setPixels(pixels, 0, newWidth, 0, 0, newWidth, newHeight);
             return newBitmap;
         } catch (Throwable t) {
             if (t instanceof OutOfMemoryError) System.gc();

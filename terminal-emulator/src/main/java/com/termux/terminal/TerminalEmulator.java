@@ -3000,14 +3000,27 @@ public final class TerminalEmulator {
         KittyStoredImage storedImage = new KittyStoredImage(kittyImage.getFormat(),
             kittyImage.getDecodedImage(), kittyImage.getPixelWidth(), kittyImage.getPixelHeight());
 
+        boolean isRetransmission = imageId != KittyImage.IMAGE_ID__NONE && mKittyImages.containsKey(imageId);
         // The image is only stored if it can be referenced by an image id with an `a=p` command later.
-        if (imageId != KittyImage.IMAGE_ID__NONE) {
-            storeKittyImage(imageId, storedImage);
+        if (imageId != KittyImage.IMAGE_ID__NONE && !storeKittyImage(imageId, storedImage)) {
+            kittyImage.setStateFailed(KittyImage.ERROR__ENOSPC,
+                "image data exceeds max total size " + KITTY_IMAGES__MAX_TOTAL_SIZE);
+            return;
+        }
+
+        if (isRetransmission) {
+            deleteKittyImagePlacementsAcrossBuffers(imageId, KittyImage.PLACEMENT_ID__NONE);
         }
 
         if (kittyImage.getAction() == KittyImage.ACTION__TRANSMIT_AND_DISPLAY) {
             placeKittyImage(kittyImage, storedImage);
         }
+    }
+
+    /** Delete kitty graphics placements from both the main and alternate screen buffers. */
+    private void deleteKittyImagePlacementsAcrossBuffers(long imageId, long placementId) {
+        mMainBuffer.deleteKittyImagePlacements(imageId, placementId);
+        mAltBuffer.deleteKittyImagePlacements(imageId, placementId);
     }
 
     /**
@@ -3039,8 +3052,8 @@ public final class TerminalEmulator {
             return;
         }
 
-        int[] cursorDelta = mScreen.addTerminalBitmapForKittyImage(storedImage.mFormat, storedImage.mImage,
-            storedImage.mPixelWidth, storedImage.mPixelHeight,
+        TerminalBitmap terminalBitmap = mScreen.buildTerminalBitmapForKittyImage(storedImage.mFormat,
+            storedImage.mImage, storedImage.mPixelWidth, storedImage.mPixelHeight,
             kittyImage.getSourceX(), kittyImage.getSourceY(),
             kittyImage.getSourceWidth(), kittyImage.getSourceHeight(),
             mCursorCol, mCursorRow, mCellWidthPixels, mCellHeightPixels,
@@ -3048,11 +3061,30 @@ public final class TerminalEmulator {
             kittyImage.shouldPreserveAspectRatio(),
             kittyImage.getImageId(), kittyImage.getPlacementId());
 
+        // A null bitmap means the image could not be created. The builder does not add it to the
+        // buffer, which leaves an existing placement with the same id untouched.
+        if (terminalBitmap == null) {
+            kittyImage.setStateFailed(KittyImage.ERROR__EBADPNG, "displaying image failed");
+            return;
+        }
+
+        int[] cursorDelta = terminalBitmap.mCursorDelta;
+
         // A bitmap always covers at least one column if it was created successfully.
         if (cursorDelta[1] < 1) {
             kittyImage.setStateFailed(KittyImage.ERROR__EBADPNG, "displaying image failed");
             return;
         }
+
+        // A non-zero image and placement id pair identifies a placement globally across both
+        // buffers. Delete the previous placement only after the replacement has been built.
+        if (kittyImage.getImageId() != KittyImage.IMAGE_ID__NONE &&
+            kittyImage.getPlacementId() != KittyImage.PLACEMENT_ID__NONE) {
+            deleteKittyImagePlacementsAcrossBuffers(kittyImage.getImageId(), kittyImage.getPlacementId());
+        }
+
+        mScreen.addTerminalBitmap(terminalBitmap);
+        mScreen.doTerminalBitmapsGC(30000);
 
         // The `C=1` key requires the cursor to be left where it was, which clients that position the
         // cursor themselves before displaying an image rely on.
@@ -3100,8 +3132,8 @@ public final class TerminalEmulator {
     /**
      * Send the response for a kitty graphics command as per the quiet level passed with its `q` key.
      *
-     * The success response is `ESC _ G i=<id> ; OK ST` and the error response is
-     * `ESC _ G i=<id> ; <error code> : <error message> ST`.
+     * The success response is `ESC _ G i=<id>[,p=<placement id>] ; OK ST` and the error response is
+     * `ESC _ G i=<id>[,p=<placement id>] ; <error code> : <error message> ST`.
      */
     private void respondToKittyGraphicsCommand(KittyImage kittyImage) {
         // A response cannot be matched with the command that caused it without an image id, so none
@@ -3110,13 +3142,15 @@ public final class TerminalEmulator {
         if (imageId == KittyImage.IMAGE_ID__NONE) return;
 
         int quiet = kittyImage.getQuiet();
+        String placementId = kittyImage.getPlacementId() != KittyImage.PLACEMENT_ID__NONE ?
+            ",p=" + kittyImage.getPlacementId() : "";
 
         if (!kittyImage.isFailed()) {
             if (quiet >= KittyImage.QUIET__SUCCESS) return;
-            mSession.write("\033_Gi=" + imageId + ";OK\033\\");
+            mSession.write("\033_Gi=" + imageId + placementId + ";OK\033\\");
         } else {
             if (quiet >= KittyImage.QUIET__ALL) return;
-            mSession.write("\033_Gi=" + imageId + ";" + kittyImage.getErrorCode() + ":" + kittyImage.getErrorMessage() + "\033\\");
+            mSession.write("\033_Gi=" + imageId + placementId + ";" + kittyImage.getErrorCode() + ":" + kittyImage.getErrorMessage() + "\033\\");
         }
     }
 
@@ -3124,15 +3158,14 @@ public final class TerminalEmulator {
      * Store the image transmitted for a kitty graphics image id so that it can be displayed again
      * with an `a=p` command and freed with an `a=d,d=I` command.
      */
-    private void storeKittyImage(long imageId, KittyStoredImage storedImage) {
-        removeKittyImage(imageId);
-
+    private boolean storeKittyImage(long imageId, KittyStoredImage storedImage) {
         if (storedImage.mImage.length > KITTY_IMAGES__MAX_TOTAL_SIZE) {
             Logger.logWarn(mClient, LOG_TAG, "Not storing kitty graphics image " + imageId + " with" +
                 " size " + storedImage.mImage.length + " greater than max total size " + KITTY_IMAGES__MAX_TOTAL_SIZE);
-            return;
+            return false;
         }
 
+        removeKittyImage(imageId);
         mKittyImages.put(imageId, storedImage);
         mKittyImagesTotalSize += storedImage.mImage.length;
 
@@ -3145,6 +3178,7 @@ public final class TerminalEmulator {
             mKittyImagesTotalSize -= entry.getValue().mImage.length;
             iterator.remove();
         }
+        return true;
     }
 
     /** Remove the image stored for a kitty graphics image id. */

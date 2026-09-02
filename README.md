@@ -24,6 +24,7 @@ Quick how-to about Termux package management is available at [Package Management
 ## Contents
 - [Termux App and Plugins](#termux-app-and-plugins)
 - [Installation](#installation)
+- [Kitty graphics experimental build](#kitty-graphics-experimental-build)
 - [Uninstallation](#uninstallation)
 - [Important Links](#important-links)
 - [Debugging](#debugging)
@@ -114,6 +115,26 @@ Version: 3
 ```
 
 </details>
+
+### Kitty graphics experimental build
+
+This fork includes an experimental subset of the Kitty graphics protocol. It supports direct `APC _G` transmit, transmit-and-display, display, query, and delete actions with PNG, raw RGB, and raw RGBA data, including chunked transfers, image/placement IDs, cell-sized placement, cropping, quiet responses, and cursor-preserving display.
+
+File, temporary-file, and shared-memory transmission, zlib compression, animation, and composition are not supported. Unicode placeholders, z-index and pixel offsets are ignored.
+
+Build the Android 7 package variant with:
+
+```sh
+TERMUX_PACKAGE_VARIANT=apt-android-7 ./gradlew assembleDebug
+```
+
+The universal APK is `app/build/outputs/apk/debug/termux-app_apt-android-7-debug_universal.apk`. Because it uses the GitHub test key, it is a drop-in update only over a GitHub-signed Termux installation. It cannot update F-Droid: switching from F-Droid requires uninstalling all Termux and plugin apps, which removes their data unless it is backed up first.
+
+Install or update it with:
+
+```sh
+adb install -r app/build/outputs/apk/debug/termux-app_apt-android-7-debug_universal.apk
+```
 
 ### Google Play Store **(Experimental branch)**
 
