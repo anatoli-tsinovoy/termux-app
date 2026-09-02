@@ -140,6 +140,11 @@ public class KittyGraphicsTest extends TerminalTestCase {
         assertEnteringStringGivesResponse(
             "\033_Ga=t,f=100,t=d,i=602,p=0,m=0;" + PNG_BASE64 + "\033\\",
             "\033_Gi=602;OK\033\\");
+
+        // Queries do not create placements, so their responses omit p.
+        assertEnteringStringGivesResponse(
+            "\033_Ga=q,f=24,t=d,i=603,p=7,s=1,v=1;" + RGB_BASE64_1X1 + "\033\\",
+            "\033_Gi=603;OK\033\\");
     }
 
 
@@ -211,9 +216,11 @@ public class KittyGraphicsTest extends TerminalTestCase {
             "                    ", "                    ");
     }
 
-    public void testImageExceedingRetainedSourceQuotaRespondsEnospcAndPreservesOldData() {
+    public void testImageExceedingRetainedSourceQuotaRespondsEnospcAndDeletesOldImage() {
         withTerminalSized(20, 4);
         enterString("\033_Ga=t,f=100,t=d,i=603,m=0,q=2;" + PNG_BASE64 + "\033\\");
+        TerminalBuffer mainBuffer = mTerminal.getScreen();
+        addPlacement(mainBuffer, 0, true, 603, 1, 0, 0, 2);
 
         int retainedSourceQuota = 8 * 1024 * 1024;
         byte[] oversizedImage = new byte[retainedSourceQuota + 1];
@@ -221,7 +228,8 @@ public class KittyGraphicsTest extends TerminalTestCase {
         assertEnteringStringGivesResponse(
             "\033_Ga=t,f=100,t=d,i=603,m=0;" + oversizedPayload + "\033\\",
             "\033_Gi=603;ENOSPC:image data exceeds max total size " + retainedSourceQuota + "\033\\");
-        assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(603));
+        assertEquals(-1, mTerminal.getKittyImageDataLength(603));
+        assertFalse(hasBitmap(mainBuffer, 0));
     }
 
     public void testRetransmitDeletesPlacementsAcrossMainAndAlternateBuffers() {

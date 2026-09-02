@@ -4,24 +4,24 @@ import junit.framework.TestCase;
 
 public class TerminalBitmapTest extends TestCase {
 
-    public void testKittyPlacementWidthConstraintPreservesAspectRatio() {
-        assertArrayEquals(new int[] {300, 150}, TerminalBitmap.getKittyPlacementSize(
-            2, 1, 1000, -1, true, 300));
+    public void testKittyPlacementRetainsRequestedAspectRatioSizeForClipping() {
+        assertArrayEquals(new int[] {1000, 500}, TerminalBitmap.getKittyPlacementSize(
+            2, 1, 1000, -1, true));
     }
 
-    public void testKittyPlacementWidthConstraintKeepsExactHeight() {
-        assertArrayEquals(new int[] {300, 2}, TerminalBitmap.getKittyPlacementSize(
-            1, 1, 1000, 2, false, 300));
+    public void testKittyPlacementRetainsRequestedExactSizeForClipping() {
+        assertArrayEquals(new int[] {1000, 2}, TerminalBitmap.getKittyPlacementSize(
+            1, 1, 1000, 2, false));
     }
 
     public void testKittyPlacementRejectsSizeThatExceedsBitmapLimit() {
         assertNull(TerminalBitmap.getKittyPlacementSize(
-            1, 1, Integer.MAX_VALUE, Integer.MAX_VALUE, false, Integer.MAX_VALUE));
+            1, 1, Integer.MAX_VALUE, Integer.MAX_VALUE, false));
     }
 
     public void testKittyPlacementRejectsUnrepresentableAspectRatio() {
         assertNull(TerminalBitmap.getKittyPlacementSize(
-            1, 2, Integer.MAX_VALUE, -1, true, Integer.MAX_VALUE));
+            1, 2, Integer.MAX_VALUE, -1, true));
     }
 
     private static void assertArrayEquals(int[] expected, int[] actual) {

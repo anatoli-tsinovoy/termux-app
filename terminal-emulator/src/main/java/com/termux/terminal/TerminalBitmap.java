@@ -438,8 +438,7 @@ public class TerminalBitmap {
 
             if (height > 0 || width > 0) {
                 int[] newSize = getKittyPlacementSize(bitmapWidth, bitmapHeight, width, height,
-                    shouldPreserveAspectRatio,
-                    getTerminalWidthPixels(terminalBuffer.mColumns, x, cellWidth));
+                    shouldPreserveAspectRatio);
                 if (newSize == null) {
                     Logger.logError(terminalBuffer.getClient(), LOG_TAG,
                         "Create terminal bitmap " + bitmapNum + " for kitty image failed:" +
@@ -660,48 +659,21 @@ public class TerminalBitmap {
         }
     }
 
-    private static long getTerminalWidthPixels(int columns, int x, int cellWidth) {
-        long availableColumns = (long) columns - x;
-        if (availableColumns < 1 || cellWidth < 1 ||
-            availableColumns > Long.MAX_VALUE / cellWidth) {
-            return -1;
-        }
-        return availableColumns * cellWidth;
-    }
 
     /**
      * Get Kitty placement dimensions that are safe to pass to
      * {@link Bitmap#createScaledBitmap(Bitmap, int, int, boolean)}.
      *
-     * <p>The terminal can only display the part of a placement within its remaining columns, so
-     * its width is constrained before scaling. If the placement requests aspect-ratio preserving
-     * scaling, constraining the width also constrains the height. Exact-size placements keep their
-     * requested height, as they do when {@link #resizeBitmapConstrained(String, String,
-     * TerminalSessionClient, Bitmap, int, int, int, int, int)} crops them later. A placement that
-     * cannot fit in the bitmap size limit is rejected rather than allocated.</p>
+     * <p>The requested destination rectangle is retained so that a placement extending past the
+     * terminal edge is clipped rather than squeezed. A placement that cannot fit in the bitmap size
+     * limit is rejected before Android attempts to allocate it.</p>
      *
-     * @return the safe dimensions, or {@code null} if they cannot be represented or allocated.
+     * @return the requested dimensions, or {@code null} if they cannot be represented or allocated.
      */
     static int[] getKittyPlacementSize(int imageWidth, int imageHeight,
-                                       int width, int height, boolean shouldPreserveAspectRatio,
-                                       long terminalWidthPixels) {
-        if (terminalWidthPixels < 1) return null;
-
+                                       int width, int height, boolean shouldPreserveAspectRatio) {
         int[] newSize = getScaledImageSize(imageWidth, imageHeight, width, height,
             shouldPreserveAspectRatio);
-        if (newSize[0] < 1 || newSize[1] < 1) return null;
-
-        if ((long) newSize[0] > terminalWidthPixels) {
-            int constrainedWidth = (int) Math.min(terminalWidthPixels, Integer.MAX_VALUE);
-            if (shouldPreserveAspectRatio) {
-                long constrainedHeight = (long) newSize[1] * constrainedWidth / newSize[0];
-                if (constrainedHeight < 1 || constrainedHeight > Integer.MAX_VALUE) return null;
-                newSize = new int[] {constrainedWidth, (int) constrainedHeight};
-            } else {
-                newSize[0] = constrainedWidth;
-            }
-        }
-
         return isBitmapSizeWithinLimit(newSize[0], newSize[1]) ? newSize : null;
     }
 

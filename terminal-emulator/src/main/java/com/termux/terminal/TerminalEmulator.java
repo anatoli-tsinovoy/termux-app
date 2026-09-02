@@ -3000,16 +3000,16 @@ public final class TerminalEmulator {
         KittyStoredImage storedImage = new KittyStoredImage(kittyImage.getFormat(),
             kittyImage.getDecodedImage(), kittyImage.getPixelWidth(), kittyImage.getPixelHeight());
 
-        boolean isRetransmission = imageId != KittyImage.IMAGE_ID__NONE && mKittyImages.containsKey(imageId);
-        // The image is only stored if it can be referenced by an image id with an `a=p` command later.
-        if (imageId != KittyImage.IMAGE_ID__NONE && !storeKittyImage(imageId, storedImage)) {
-            kittyImage.setStateFailed(KittyImage.ERROR__ENOSPC,
-                "image data exceeds max total size " + KITTY_IMAGES__MAX_TOTAL_SIZE);
-            return;
-        }
-
-        if (isRetransmission) {
+        // Retransmitting an image id invalidates the previous data and every placement even when
+        // the new image cannot be retained.
+        if (imageId != KittyImage.IMAGE_ID__NONE) {
             deleteKittyImagePlacementsAcrossBuffers(imageId, KittyImage.PLACEMENT_ID__NONE);
+            removeKittyImage(imageId);
+            if (!storeKittyImage(imageId, storedImage)) {
+                kittyImage.setStateFailed(KittyImage.ERROR__ENOSPC,
+                    "image data exceeds max total size " + KITTY_IMAGES__MAX_TOTAL_SIZE);
+                return;
+            }
         }
 
         if (kittyImage.getAction() == KittyImage.ACTION__TRANSMIT_AND_DISPLAY) {
@@ -3142,8 +3142,10 @@ public final class TerminalEmulator {
         if (imageId == KittyImage.IMAGE_ID__NONE) return;
 
         int quiet = kittyImage.getQuiet();
-        String placementId = kittyImage.getPlacementId() != KittyImage.PLACEMENT_ID__NONE ?
-            ",p=" + kittyImage.getPlacementId() : "";
+        String placementId =
+            kittyImage.getAction() != KittyImage.ACTION__QUERY &&
+            kittyImage.getPlacementId() != KittyImage.PLACEMENT_ID__NONE ?
+                ",p=" + kittyImage.getPlacementId() : "";
 
         if (!kittyImage.isFailed()) {
             if (quiet >= KittyImage.QUIET__SUCCESS) return;
@@ -3165,7 +3167,6 @@ public final class TerminalEmulator {
             return false;
         }
 
-        removeKittyImage(imageId);
         mKittyImages.put(imageId, storedImage);
         mKittyImagesTotalSize += storedImage.mImage.length;
 
