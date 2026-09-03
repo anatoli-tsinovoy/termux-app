@@ -576,6 +576,64 @@ public final class TerminalBuffer {
         return bitmapNum >= TERMINAL_BITMAP__NUM_START ? mTerminalBitmaps.get(bitmapNum): null;
     }
 
+    /**
+     * Return the style for one cell of a loaded kitty image placement. Unicode placeholders may
+     * arrive after tmux has redrawn over the provisional cells installed by the graphics APC.
+     */
+    synchronized long getKittyImageCellStyle(long imageId, int x, int y) {
+        for (Map.Entry<Integer, TerminalBitmap> entry : mTerminalBitmaps.entrySet()) {
+            TerminalBitmap bitmap = entry.getValue();
+            if (bitmap.isKittyImage() && bitmap.getKittyImageId() == imageId) {
+                return TextStyle.encodeTerminalBitmap(entry.getKey(), x, y);
+            }
+        }
+        return -1;
+    }
+
+    /** Clear a placement's provisional cells without freeing the bitmap used by U=1 placeholders. */
+    synchronized void clearTerminalBitmapCells(int bitmapNum) {
+        for (TerminalRow line : mLines) {
+            if (line == null || !line.mHasTerminalBitmap) continue;
+
+            boolean hasTerminalBitmap = false;
+            for (int column = 0; column < mColumns; column++) {
+                int cellBitmapNum = TextStyle.getTerminalBitmapNum(line.getStyle(column));
+                if (cellBitmapNum == bitmapNum) {
+                    line.setChar(column, ' ', TextStyle.NORMAL);
+                } else if (cellBitmapNum >= TERMINAL_BITMAP__NUM_START) {
+                    hasTerminalBitmap = true;
+                }
+            }
+            line.mHasTerminalBitmap = hasTerminalBitmap;
+        }
+    }
+
+    /** Move all visible cells of a U=1 kitty placement to its placeholder-grid anchor. */
+    synchronized void placeKittyImageGrid(long imageId, int anchorColumn, int anchorRow,
+                                          int columns, int rows) {
+        int bitmapNum = -1;
+        for (Map.Entry<Integer, TerminalBitmap> entry : mTerminalBitmaps.entrySet()) {
+            TerminalBitmap bitmap = entry.getValue();
+            if (bitmap.isKittyImage() && bitmap.getKittyImageId() == imageId) {
+                bitmapNum = entry.getKey();
+                break;
+            }
+        }
+        if (bitmapNum < TERMINAL_BITMAP__NUM_START) return;
+
+        clearTerminalBitmapCells(bitmapNum);
+        int firstX = Math.max(0, -anchorColumn);
+        int lastX = Math.min(columns, mColumns - anchorColumn);
+        int firstY = Math.max(0, -anchorRow);
+        int lastY = Math.min(rows, mScreenRows - anchorRow);
+        for (int y = firstY; y < lastY; y++) {
+            for (int x = firstX; x < lastX; x++) {
+                setChar(anchorColumn + x, anchorRow + y, ' ',
+                    TextStyle.encodeTerminalBitmap(bitmapNum, x, y));
+            }
+        }
+    }
+
     public synchronized void clearTerminalBitmaps() {
         mTerminalBitmaps.clear();
     }

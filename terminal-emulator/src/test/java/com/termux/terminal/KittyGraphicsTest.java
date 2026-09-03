@@ -948,18 +948,30 @@ public class KittyGraphicsTest extends TerminalTestCase {
 
     public void testUnicodePlaceholderGridPreservesBitmapsAndCursor() {
         withTerminalSized(6, 4);
-        addPlacement(0, true, 1, 1, 0, 0, 2);
-        addPlacement(1, true, 1, 2, 1, 0, 2);
+        addPlacement(0, true, 66051, 1, 0, 0, 2);
+        addPlacement(1, true, 66051, 2, 1, 0, 2);
 
         KittyImage kittyImage = new KittyImage(null);
-        StringBuilder args = new StringBuilder("GU=1,c=2,r=2");
+        StringBuilder args = new StringBuilder("GU=1,i=66051,c=2,r=2");
         assertEquals(args.length(), kittyImage.readControlData(args, 1));
         mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {2, 2});
 
+        // tmux may redraw over the provisional image and draw a sibling pane before emitting this
+        // pane's placeholders. The image-id foreground color restores the bitmap cells in place.
+        enterString("\033[1;1H\033[2K\033[2;1H\033[2K\033[4;1Hsister"
+            + "\033[1;1H\033[38;2;1;2;3m");
         String placeholder = new String(Character.toChars(0x10EEEE));
-        enterString("\r" + placeholder + "\u0305\u0305" + placeholder + "\u0305\u030D"
+        enterString(placeholder + "\u0305\u0305");
+        // tmux can stream incomplete grapheme updates; the first addressed cell anchors the whole
+        // bounded grid so later row updates cannot leave stale text blocks behind.
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 1)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 0)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 1)));
+
+        enterString(placeholder + "\u0305\u030D"
             + "\n\r" + placeholder + "\u030D\u0305" + placeholder + "\u030D\u030D"
-            + "\n\r");
+            + "\n\r\033[39m");
 
         assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
         assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 1)));
@@ -967,9 +979,15 @@ public class KittyGraphicsTest extends TerminalTestCase {
         assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 1)));
         assertCursorAt(2, 0);
 
-        // The suppression window is over, so ordinary private-use and combining characters print.
-        enterString("\uE000\u0302");
-        assertLineStartsWith(2, 0xE000, 0x0302);
+        // A later partial tmux redraw addresses the source row and columns with diacritics.
+        enterString("\033[2;1H\033[2K\033[38;2;1;2;3m"
+            + placeholder + "\u030D\u0305" + placeholder + "\u030D\u030D");
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 0)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 1)));
+
+        // The same private-use marker with a different color remains ordinary text.
+        enterString("\033[3;1H\033[39m" + placeholder);
+        assertLineStartsWith(2, 0x10EEEE);
         assertEquals(TextStyle.NORMAL, getStyleAt(2, 0));
     }
 

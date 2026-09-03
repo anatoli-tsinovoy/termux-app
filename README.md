@@ -120,7 +120,7 @@ Version: 3
 
 This fork includes an experimental subset of the Kitty graphics protocol. It supports direct `APC _G` transmit, transmit-and-display, display, query, and delete actions with PNG, raw RGB, and raw RGBA data, including chunked transfers, image/placement IDs, cell-sized placement, cropping, quiet responses, and cursor-preserving display.
 
-Kitty output also works through tmux 3.3 or newer when `allow-passthrough` is enabled. The tmux transport is decoded as a bounded stream, and the `U=1` placeholder grid emitted by timg is handled without overwriting the bitmap cells. For example:
+Kitty output also works through tmux 3.3 or newer when `allow-passthrough` is enabled. The tmux transport is decoded as a bounded stream, and timg's `U=1` placeholder cells are matched by image-id color so split-pane redraws cannot turn them into text blocks. For example:
 
 ```sh
 tmux set -g allow-passthrough on
