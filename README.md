@@ -120,7 +120,14 @@ Version: 3
 
 This fork includes an experimental subset of the Kitty graphics protocol. It supports direct `APC _G` transmit, transmit-and-display, display, query, and delete actions with PNG, raw RGB, and raw RGBA data, including chunked transfers, image/placement IDs, cell-sized placement, cropping, quiet responses, and cursor-preserving display.
 
-File, temporary-file, and shared-memory transmission, zlib compression, animation, and composition are not supported. Unicode placeholders, z-index and pixel offsets are ignored.
+Kitty output also works through tmux 3.3 or newer when `allow-passthrough` is enabled. The tmux transport is decoded as a bounded stream, and the `U=1` placeholder grid emitted by timg is handled without overwriting the bitmap cells. For example:
+
+```sh
+tmux set -g allow-passthrough on
+timg -pk image.jpg
+```
+
+File, temporary-file, and shared-memory transmission, zlib compression, animation, composition, arbitrary placeholder-addressed placement, z-index and pixel offsets are not supported.
 
 Build the Android 7 package variant with:
 
