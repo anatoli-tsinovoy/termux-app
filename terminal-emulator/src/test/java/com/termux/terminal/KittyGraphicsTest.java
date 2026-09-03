@@ -957,33 +957,44 @@ public class KittyGraphicsTest extends TerminalTestCase {
         mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {2, 2});
 
         // tmux may redraw over the provisional image and draw a sibling pane before emitting this
-        // pane's placeholders. The image-id foreground color restores the bitmap cells in place.
+        // pane's placeholders. The image-id foreground color restores bitmap cells in place.
         enterString("\033[1;1H\033[2K\033[2;1H\033[2K\033[4;1Hsister"
             + "\033[1;1H\033[38;2;1;2;3m");
         String placeholder = new String(Character.toChars(0x10EEEE));
-        enterString(placeholder + "\u0305\u0305");
-        // tmux can stream incomplete grapheme updates; the first addressed cell anchors the whole
-        // bounded grid so later row updates cannot leave stale text blocks behind.
-        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
-        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 1)));
-        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 0)));
-        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 1)));
 
-        enterString(placeholder + "\u0305\u030D"
-            + "\n\r" + placeholder + "\u030D\u0305" + placeholder + "\u030D\u030D"
-            + "\n\r\033[39m");
+        // An isolated bare placeholder before an explicit origin remains ordinary text.
+        enterString(placeholder + "\033[1;2H");
+        assertEquals(TextStyle.NORMAL, getStyleAt(0, 0));
 
-        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
-        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 1)));
-        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 0)));
-        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 1)));
-        assertCursorAt(2, 0);
+        // A complete (0, 0) source cell at an offset destination establishes the origin, but only
+        // paints the destination cell.
+        enterString("\033[1;3H" + placeholder + "\u0305\u0305");
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 2)));
+        assertEquals(TextStyle.NORMAL, getStyleAt(0, 0));
+        assertEquals(TextStyle.NORMAL, getStyleAt(0, 1));
+        assertEquals(TextStyle.NORMAL, getStyleAt(0, 3));
+        assertEquals(TextStyle.NORMAL, getStyleAt(1, 0));
+        assertEquals(TextStyle.NORMAL, getStyleAt(1, 1));
+        assertEquals(TextStyle.NORMAL, getStyleAt(1, 2));
+        assertEquals(TextStyle.NORMAL, getStyleAt(1, 3));
+        assertCursorAt(0, 3);
 
-        // A later partial tmux redraw addresses the source row and columns with diacritics.
-        enterString("\033[2;1H\033[2K\033[38;2;1;2;3m"
-            + placeholder + "\u030D\u0305" + placeholder + "\u030D\u030D");
-        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 0)));
-        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 1)));
+        // Bare placeholders for later source cells are finalized by ordinary text or controls.
+        enterString("\033[1;4H" + placeholder + "x");
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 3)));
+        enterString("\033[2;3H" + placeholder + "\033[2;4H");
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 2)));
+        enterString(placeholder + "y");
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 3)));
+        assertCursorAt(1, 5);
+
+        // A lone nonzero-row source cell at the bottom must not infer an anchor or repaint a strip.
+        enterString("\033[4;1H" + placeholder + "\u030D\u0305");
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(3, 0)));
+        assertEquals(TextStyle.NORMAL, getStyleAt(2, 0));
+        assertEquals(TextStyle.NORMAL, getStyleAt(2, 1));
+        assertEquals(TextStyle.NORMAL, getStyleAt(3, 1));
+        assertCursorAt(3, 1);
 
         // The same private-use marker with a different color remains ordinary text.
         enterString("\033[3;1H\033[39m" + placeholder);

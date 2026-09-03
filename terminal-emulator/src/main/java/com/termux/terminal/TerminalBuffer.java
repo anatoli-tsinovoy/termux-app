@@ -608,31 +608,6 @@ public final class TerminalBuffer {
         }
     }
 
-    /** Move all visible cells of a U=1 kitty placement to its placeholder-grid anchor. */
-    synchronized void placeKittyImageGrid(long imageId, int anchorColumn, int anchorRow,
-                                          int columns, int rows) {
-        int bitmapNum = -1;
-        for (Map.Entry<Integer, TerminalBitmap> entry : mTerminalBitmaps.entrySet()) {
-            TerminalBitmap bitmap = entry.getValue();
-            if (bitmap.isKittyImage() && bitmap.getKittyImageId() == imageId) {
-                bitmapNum = entry.getKey();
-                break;
-            }
-        }
-        if (bitmapNum < TERMINAL_BITMAP__NUM_START) return;
-
-        clearTerminalBitmapCells(bitmapNum);
-        int firstX = Math.max(0, -anchorColumn);
-        int lastX = Math.min(columns, mColumns - anchorColumn);
-        int firstY = Math.max(0, -anchorRow);
-        int lastY = Math.min(rows, mScreenRows - anchorRow);
-        for (int y = firstY; y < lastY; y++) {
-            for (int x = firstX; x < lastX; x++) {
-                setChar(anchorColumn + x, anchorRow + y, ' ',
-                    TextStyle.encodeTerminalBitmap(bitmapNum, x, y));
-            }
-        }
-    }
 
     public synchronized void clearTerminalBitmaps() {
         mTerminalBitmaps.clear();
