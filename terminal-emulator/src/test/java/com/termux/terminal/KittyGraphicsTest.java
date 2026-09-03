@@ -929,19 +929,19 @@ public class KittyGraphicsTest extends TerminalTestCase {
 
     public void testUnicodePlaceholderPolicyIsParsed() {
         KittyImage unicodePlaceholders = new KittyImage(null);
-        StringBuilder unicodeArgs = new StringBuilder("a=p,U=1,c=2,r=2");
+        StringBuilder unicodeArgs = new StringBuilder("Ga=p,U=1,c=2,r=2");
         assertEquals(unicodeArgs.length(), unicodePlaceholders.readControlData(unicodeArgs, 1));
         assertTrue(unicodePlaceholders.usesUnicodePlaceholders());
         assertFalse(unicodePlaceholders.shouldMoveCursor());
 
         KittyImage ordinaryPlacement = new KittyImage(null);
-        StringBuilder ordinaryArgs = new StringBuilder("a=p,U=0,c=2,r=2");
+        StringBuilder ordinaryArgs = new StringBuilder("Ga=p,U=0,c=2,r=2");
         assertEquals(ordinaryArgs.length(), ordinaryPlacement.readControlData(ordinaryArgs, 1));
         assertFalse(ordinaryPlacement.usesUnicodePlaceholders());
         assertTrue(ordinaryPlacement.shouldMoveCursor());
 
         KittyImage invalidPolicy = new KittyImage(null);
-        StringBuilder invalidArgs = new StringBuilder("a=p,U=2");
+        StringBuilder invalidArgs = new StringBuilder("Ga=p,U=2");
         assertEquals(-1, invalidPolicy.readControlData(invalidArgs, 1));
         assertEquals(KittyImage.ERROR__EINVAL, invalidPolicy.getErrorCode());
     }
@@ -952,7 +952,7 @@ public class KittyGraphicsTest extends TerminalTestCase {
         addPlacement(1, true, 1, 2, 1, 0, 2);
 
         KittyImage kittyImage = new KittyImage(null);
-        StringBuilder args = new StringBuilder("U=1,c=2,r=2");
+        StringBuilder args = new StringBuilder("GU=1,c=2,r=2");
         assertEquals(args.length(), kittyImage.readControlData(args, 1));
         mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {2, 2});
 
