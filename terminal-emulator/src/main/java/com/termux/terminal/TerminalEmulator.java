@@ -329,6 +329,25 @@ public final class TerminalEmulator {
     /** Whether processing an `ESC` for a DCS command. */
     private boolean ESC_DCS__ESC = false;
 
+    /**
+     * The DCS prefix used by tmux passthrough. Once the complete prefix is
+     * received, the wrapped command is decoded as a stream instead of being
+     * collected in {@link #mTerminalControlArgs}.
+     */
+    private static final String TMUX_PASSTHROUGH_PREFIX = "tmux;";
+    private static final int TMUX_PASSTHROUGH_NONE = 0;
+    private static final int TMUX_PASSTHROUGH_ACTIVE = 1;
+    private static final int TMUX_PASSTHROUGH_DISCARD = 2;
+
+    /** The number of leading DCS characters matching {@link #TMUX_PASSTHROUGH_PREFIX}. */
+    private int mTmuxPassthroughPrefixLength;
+    /** The bounded state of a tmux passthrough outer wrapper. */
+    private int mTmuxPassthroughState = TMUX_PASSTHROUGH_NONE;
+    /** Whether an outer ESC is waiting for the second framing character. */
+    private boolean mTmuxPassthroughEsc;
+    /** Whether the inner parser is currently processing decoded passthrough data. */
+    private boolean mProcessingTmuxPassthroughPayload;
+
 
     /** Whether processing a sixel `DCS q s..s ST` or `DCS P1; P2; P3; q s..s ST` command to create a {@link TerminalSixel}. */
     private boolean ESC_DCS__SIXEL = false;
@@ -410,6 +429,12 @@ public final class TerminalEmulator {
      * command has been received, and unset when the command has been processed.
      */
     private KittyImage mKittyGraphicsPayload;
+
+    /** U+10EEEE placeholders are ignored only for the grid of the latest U=1 placement. */
+    private static final int KITTY_UNICODE_PLACEHOLDER = 0x10EEEE;
+    private int mKittyUnicodePlaceholderCells;
+    private boolean mKittyUnicodePlaceholderAfterBase;
+
 
     /**
      * The image data transmitted for a kitty graphics image id, which is kept so that the image can
@@ -823,7 +848,7 @@ public final class TerminalEmulator {
             } else {
                 // Not a UTF-8 continuation byte so replace the entire sequence up to now with the replacement char:
                 mUtf8Index = mUtf8ToFollow = 0;
-                emitCodePoint(UNICODE_REPLACEMENT_CHAR);
+                processCodePoint(UNICODE_REPLACEMENT_CHAR);
                 // The Unicode Standard Version 6.2 – Core Specification
                 // (http://www.unicode.org/versions/Unicode6.2.0/ch03.pdf):
                 // "If the converter encounters an ill-formed UTF-8 code unit sequence which starts with a valid first
@@ -853,6 +878,70 @@ public final class TerminalEmulator {
     }
 
     public void processCodePoint(int b) {
+        if (mTmuxPassthroughState != TMUX_PASSTHROUGH_NONE) {
+            processTmuxPassthroughCodePoint(b);
+            return;
+        }
+        processCodePointInternal(b);
+    }
+
+    /**
+     * Decode one code point from a tmux passthrough outer wrapper. The
+     * decoded code point is handed directly to the normal parser so the
+     * wrapper state remains independent of the inner escape state.
+     */
+    private void processTmuxPassthroughCodePoint(int b) {
+        if (mTmuxPassthroughEsc) {
+            mTmuxPassthroughEsc = false;
+            if (b == 27) {
+                if (mTmuxPassthroughState == TMUX_PASSTHROUGH_ACTIVE) {
+                    mProcessingTmuxPassthroughPayload = true;
+                    processCodePointInternal(27);
+                    mProcessingTmuxPassthroughPayload = false;
+                }
+            } else if (b == '\\') {
+                finishTmuxPassthrough(mTmuxPassthroughState == TMUX_PASSTHROUGH_DISCARD);
+            } else {
+                // An ESC followed by anything other than ESC or ST is
+                // malformed outer framing. Discard through the outer ST.
+                clearTerminalControlArgs();
+                clearDcsTypeVariables();
+                clearOscTypeVariables();
+                clearApcTypeVariables();
+                mKittyImage = null;
+                mEscapeState = ESC_NONE;
+                mTmuxPassthroughState = TMUX_PASSTHROUGH_DISCARD;
+            }
+            return;
+        }
+
+        if (b == 27) {
+            mTmuxPassthroughEsc = true;
+        } else if (mTmuxPassthroughState == TMUX_PASSTHROUGH_ACTIVE) {
+            mProcessingTmuxPassthroughPayload = true;
+            processCodePointInternal(b);
+            mProcessingTmuxPassthroughPayload = false;
+        }
+    }
+
+    /** Finish a tmux passthrough wrapper, dropping any unfinished inner command. */
+    private void finishTmuxPassthrough(boolean malformed) {
+        boolean incompleteInnerSequence = mEscapeState != ESC_NONE || mKittyGraphicsPayload != null;
+        mTmuxPassthroughState = TMUX_PASSTHROUGH_NONE;
+        mTmuxPassthroughEsc = false;
+        mProcessingTmuxPassthroughPayload = false;
+        clearTerminalControlArgs();
+        clearDcsTypeVariables();
+        clearOscTypeVariables();
+        clearApcTypeVariables();
+        if (malformed || incompleteInnerSequence) {
+            mITermImage = null;
+            mKittyImage = null;
+        }
+        mEscapeState = ESC_NONE;
+    }
+
+    private void processCodePointInternal(int b) {
         mScreen.doTerminalBitmapsGC(300000);
 
         if (mEscapeState == ESC_OSC && mIsFastPathOsc) {
@@ -885,6 +974,8 @@ public final class TerminalEmulator {
             if (!mContinueSequence) mEscapeState = ESC_NONE;
             return;
         }
+
+        if (b < 32 || b == 27) mKittyUnicodePlaceholderAfterBase = false;
 
         switch (b) {
             case 0: // Null character (NUL, ^@). Do nothing.
@@ -1239,6 +1330,28 @@ public final class TerminalEmulator {
      * Do {@link #ESC_DCS}. Check its docs for more info.
      */
     private void doDcs(final int b) {
+        if (mTmuxPassthroughPrefixLength >= 0) {
+            if (mTmuxPassthroughPrefixLength < TMUX_PASSTHROUGH_PREFIX.length() &&
+                b == TMUX_PASSTHROUGH_PREFIX.charAt(mTmuxPassthroughPrefixLength)) {
+                mTmuxPassthroughPrefixLength++;
+                if (!collectTerminalControlArgs(b)) return;
+                if (mTmuxPassthroughPrefixLength == TMUX_PASSTHROUGH_PREFIX.length()) {
+                    // The prefix is the only part of the outer DCS kept in
+                    // the normal bounded argument buffer.
+                    clearTerminalControlArgs();
+                    mTmuxPassthroughPrefixLength = -1;
+                    mTmuxPassthroughState = TMUX_PASSTHROUGH_ACTIVE;
+                    mTmuxPassthroughEsc = false;
+                    mContinueSequence = false;
+                    finishSequence();
+                }
+                return;
+            }
+            // The body is an ordinary DCS as soon as the exact prefix does
+            // not match.
+            mTmuxPassthroughPrefixLength = -1;
+        }
+
         if (
             // End of DCS if string terminator ST `ESC \` received.
             (ESC_DCS__ESC && b == '\\') ||
@@ -1438,6 +1551,7 @@ public final class TerminalEmulator {
     public void clearDcsTypeVariables() {
         ESC_DCS__ESC = false;
         mIsFastPathDcs = false;
+        mTmuxPassthroughPrefixLength = 0;
 
         ESC_DCS__SIXEL = false;
         ESC_DCS__CHECK_IF_SIXEL = true;
@@ -2871,6 +2985,10 @@ public final class TerminalEmulator {
      * Do {@link #ESC_APC}. Check its docs for more info.
      */
     private void doApc() {
+        // A new APC command interrupts any previous placeholder grid.
+        mKittyUnicodePlaceholderCells = 0;
+        mKittyUnicodePlaceholderAfterBase = false;
+
         if (mKittyGraphicsPayload != null) {
             // The image data of the command has already been received and decoded.
             doApcKittyGraphics(mKittyGraphicsPayload);
@@ -2912,6 +3030,7 @@ public final class TerminalEmulator {
      * - `x=`, `y=`, `w=` and `h=` for displaying only a source rectangle of the transmitted image,
      *   which is cropped out of the image before it is scaled to the cells it is displayed in.
      * - `C=1` for not moving the cursor after displaying an image.
+     * - `U=1` for the narrow timg-compatible placeholder placement path.
      * - `q=<quiet level>` for suppressing success and error responses.
      *
      * The following is **not** supported and will result in an `ENOTSUP` error response:
@@ -2925,18 +3044,16 @@ public final class TerminalEmulator {
      * instead of being collected in {@link #mTerminalControlArgs} first, so a client may send an
      * entire image with a single command instead of splitting it into the chunks of at most `4096`
      * bytes the protocol recommends.
-     *
-     * The keys for unsupported features are read but ignored instead of resulting in an error
+     * The keys for unsupported features are read but ignored instead of resulting in an `ENOTSUP`
      * response, since a client is expected to be able to send them for images this terminal can
      * display. Every key other than the `a`, `d`, `t`, `o`, `f`, `i`, `p`, `m`, `q`, `c`, `r`, `s`,
-     * `v`, `C`, `x`, `y`, `w` and `h` keys listed above is ignored, and its value is not validated
-     * since it is not used. These are the `I` (image number), `z` (z-index), `X` and `Y` (pixel
-     * offset of the image inside its first cell) and `U` (unicode placeholder) keys, the `S`, `O`,
-     * `P` and `Q` keys for the transmission mediums and placement features that are not supported,
-     * and any key that is not part of the protocol at all. Note that not honouring `X` and `Y` means
-     * an image is aligned to the cell grid instead of being offset by up to one cell width and
-     * height, and that not honouring `I` means a client must pass an image id with the `i` key for
-     * an image it wants to display again with an `a=p` command.
+     * `v`, `C`, `U`, `x`, `y`, `w` and `h` keys listed above is ignored, and its value is not
+     * validated since it is not used. The `I` (image number), `z` (z-index), `X` and `Y` (pixel
+     * offset of the image inside its first cell) and the `S`, `O`, `P` and `Q` keys for the
+     * transmission mediums and placement features that are not supported remain ignored. Note that
+     * not honouring `X` and `Y` means an image is aligned to the cell grid instead of being offset
+     * by up to one cell width and height, and that not honouring `I` means a client must pass an image
+     * id with the `i` key for an image it wants to display again with an `a=p` command.
      *
      * - https://sw.kovidgoyal.net/kitty/graphics-protocol/
      */
@@ -3085,12 +3202,28 @@ public final class TerminalEmulator {
 
         mScreen.addTerminalBitmap(terminalBitmap);
         mScreen.doTerminalBitmapsGC(30000);
+        if (kittyImage.usesUnicodePlaceholders()) {
+            startKittyUnicodePlaceholderGrid(kittyImage, cursorDelta);
+        }
 
         // The `C=1` key requires the cursor to be left where it was, which clients that position the
         // cursor themselves before displaying an image rely on.
         if (kittyImage.shouldMoveCursor()) {
             moveCursorAfterTerminalBitmap(cursorDelta);
         }
+    }
+
+    /**
+     * Arm the bounded suppression window for the placeholder grid following
+     * a U=1 placement. The explicit c/r values are used when present because
+     * the bitmap may have scrolled while it was being installed.
+     */
+    void startKittyUnicodePlaceholderGrid(KittyImage kittyImage, int[] cursorDelta) {
+        int rows = kittyImage.mRows > 0 ? kittyImage.mRows : cursorDelta[0];
+        int columns = kittyImage.mColumns > 0 ? kittyImage.mColumns : cursorDelta[1];
+        long cells = (long) Math.max(0, rows) * Math.max(0, columns);
+        mKittyUnicodePlaceholderCells = cells > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) cells;
+        mKittyUnicodePlaceholderAfterBase = false;
     }
 
     /** Do a kitty graphics `a=d` command. */
@@ -3879,12 +4012,62 @@ public final class TerminalEmulator {
     }
 
     /**
+     * Consume a placeholder cell from the bounded U=1 placement window.
+     * Returning true means the code point must not be written to the text
+     * buffer.
+     */
+    private boolean consumeKittyUnicodePlaceholder(int codePoint) {
+        if (mKittyUnicodePlaceholderAfterBase) {
+            if (isKittyUnicodePlaceholderDiacritic(codePoint)) return true;
+            mKittyUnicodePlaceholderAfterBase = false;
+        }
+
+        if (mKittyUnicodePlaceholderCells > 0 && codePoint == KITTY_UNICODE_PLACEHOLDER) {
+            mKittyUnicodePlaceholderCells--;
+            mKittyUnicodePlaceholderAfterBase = true;
+            advanceCursorOverKittyUnicodePlaceholder();
+            return true;
+        }
+
+        // A printable character other than the expected placeholder ends
+        // the window, so later private-use/combining text is ordinary text.
+        if (mKittyUnicodePlaceholderCells > 0) {
+            mKittyUnicodePlaceholderCells = 0;
+        }
+        return false;
+    }
+
+    private static boolean isKittyUnicodePlaceholderDiacritic(int codePoint) {
+        return Character.getType(codePoint) == Character.NON_SPACING_MARK && WcWidth.width(codePoint) == 0;
+    }
+
+    /** Advance as for a width-one character without touching the cell. */
+    private void advanceCursorOverKittyUnicodePlaceholder() {
+        final boolean autoWrap = isDecsetInternalBitSet(DECSET_BIT_AUTOWRAP);
+        final boolean cursorInLastColumn = mCursorCol == mRightMargin - 1;
+
+        if (autoWrap && cursorInLastColumn && mAboutToAutoWrap) {
+            mScreen.setLineWrap(mCursorRow);
+            mCursorCol = mLeftMargin;
+            if (mCursorRow + 1 < mBottomMargin) {
+                mCursorRow++;
+            } else {
+                scrollDownOneLine();
+            }
+        }
+
+        if (autoWrap) mAboutToAutoWrap = (mCursorCol == mRightMargin - 1);
+        mCursorCol = Math.min(mCursorCol + 1, mRightMargin - 1);
+    }
+
+    /**
      * Send a Unicode code point to the screen.
      *
      * @param codePoint The code point of the character to display
      */
     private void emitCodePoint(int codePoint) {
         mLastEmittedCodePoint = codePoint;
+        if (consumeKittyUnicodePlaceholder(codePoint)) return;
         if (mUseLineDrawingUsesG0 ? mUseLineDrawingG0 : mUseLineDrawingG1) {
             // http://www.vt100.net/docs/vt102-ug/table5-15.html.
             switch (codePoint) {
@@ -4009,7 +4192,6 @@ public final class TerminalEmulator {
             // autowrap is disabled is not obvious - it's ignored here.
             return;
         }
-
         if (mInsertMode && displayWidth > 0) {
             // Move character to right one space.
             int destCol = mCursorCol + displayWidth;
@@ -4074,6 +4256,13 @@ public final class TerminalEmulator {
 
     /** Reset terminal state so user can interact with it regardless of present state. */
     public void reset() {
+        if (!mProcessingTmuxPassthroughPayload) {
+            mTmuxPassthroughState = TMUX_PASSTHROUGH_NONE;
+            mTmuxPassthroughEsc = false;
+            mTmuxPassthroughPrefixLength = 0;
+        }
+        mKittyUnicodePlaceholderCells = 0;
+        mKittyUnicodePlaceholderAfterBase = false;
         setCursorStyle();
         mArgIndex = 0;
         mContinueSequence = false;

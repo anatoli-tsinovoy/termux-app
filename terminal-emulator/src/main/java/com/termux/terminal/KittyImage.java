@@ -259,6 +259,10 @@ public class KittyImage {
     /** Whether the cursor must not be moved after displaying the image as per the `C` key. */
     protected boolean mDoNotMoveCursor = false;
 
+    /** Whether the image is a virtual placement addressed by U+10EEEE placeholders. */
+    protected boolean mUseUnicodePlaceholders = false;
+
+
     /** The error code and message to send in an error response if the command failed. */
     protected String mErrorCode;
     protected String mErrorMessage;
@@ -456,9 +460,14 @@ public class KittyImage {
     }
 
 
+    /** Whether the image is represented by a Unicode placeholder grid. */
+    public boolean usesUnicodePlaceholders() {
+        return mUseUnicodePlaceholders;
+    }
+
     /** Whether the cursor should be moved to after the image after displaying it. */
     public boolean shouldMoveCursor() {
-        return !mDoNotMoveCursor;
+        return !mDoNotMoveCursor && !mUseUnicodePlaceholders;
     }
 
 
@@ -700,6 +709,12 @@ public class KittyImage {
                 mDoNotMoveCursor = value == 1;
                 break;
             }
+            case 'U': { // Whether the image uses Unicode placeholders.
+                long value = readNumberArg(argValue, 0, 1);
+                if (value < 0) return setStateFailed(ERROR__EINVAL, "invalid unicode placeholder policy");
+                mUseUnicodePlaceholders = value == 1;
+                break;
+            }
             case 'x': { // The x coordinate in pixels of the source rectangle.
                 long value = readNumberArg(argValue, 0, PIXEL_DIMENSION__MAX);
                 if (value < 0) return setStateFailed(ERROR__EINVAL, "invalid source rectangle x");
@@ -727,9 +742,9 @@ public class KittyImage {
             default:
                 // The keys for unsupported features of the protocol are read but ignored, since a
                 // client is expected to pass them for images that can still be displayed. These are
-                // the `I` (image number), `z` (z-index) and `U` (unicode placeholder) keys, the `S`,
-                // `O`, `P` and `Q` keys for the transmission mediums and placement features that are
-                // not supported, and any key that is not part of the protocol at all.
+                // the `I` (image number), `z` (z-index), the `S`, `O`, `P` and `Q` keys for the
+                // transmission mediums and placement features that are not supported, and any key
+                // that is not part of the protocol at all.
                 // The `X` and `Y` keys, which offset the image by pixels inside the first cell it is
                 // displayed in, are also ignored, so an image will be aligned to the cell grid
                 // instead of being offset by up to one cell width and height.

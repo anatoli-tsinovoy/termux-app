@@ -40,7 +40,17 @@ public class KittyGraphicsTest extends TerminalTestCase {
     private static final String RGBA_BASE64_1X1 = "AQIDBA==";
     private static final String RGBA_BASE64_2X2 = "AQIDBAUGBwgJCgsMDQ4PEA==";
 
-
+    /** Wrap an inner escape sequence in tmux's DCS passthrough framing. */
+    private static String wrapInTmux(String inner) {
+        StringBuilder wrapped = new StringBuilder("\033Ptmux;");
+        for (int i = 0; i < inner.length(); i++) {
+            char ch = inner.charAt(i);
+            if (ch == '\033') wrapped.append('\033');
+            wrapped.append(ch);
+        }
+        wrapped.append("\033\\");
+        return wrapped.toString();
+    }
 
     /* Capability queries (`a=q`). */
 
@@ -104,6 +114,64 @@ public class KittyGraphicsTest extends TerminalTestCase {
             "\033_Gi=31,s=1,v=1,a=q,t=d,f=24;" + RGB_BASE64_1X1 + "\033\\",
             "\033_Gi=31;OK\033\\");
         assertEquals(-1, mTerminal.getKittyImageDataLength(31));
+    }
+
+    public void testTmuxPassthroughWrappedDirectQuery() {
+        withTerminalSized(10, 5);
+        assertEnteringStringGivesResponse(
+            wrapInTmux("\033_Gi=31,s=1,v=1,a=q,t=d,f=24;AAAA\033\\"),
+            "\033_Gi=31;OK\033\\");
+    }
+
+    public void testTmuxPassthroughWrappedSingleTransmit() {
+        withTerminalSized(10, 5);
+        assertEnteringStringGivesResponse(
+            wrapInTmux("\033_Ga=t,f=100,t=d,i=424,m=0,q=2;" + PNG_BASE64 + "\033\\"),
+            "");
+        assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(424));
+    }
+
+    public void testTmuxPassthroughWrappedChunkedTransmit() {
+        withTerminalSized(10, 5);
+        assertEnteringStringGivesResponse(
+            wrapInTmux("\033_Ga=t,f=100,t=d,i=425,m=1,q=2;" + PNG_BASE64_CHUNK_0 + "\033\\"),
+            "");
+        assertEnteringStringGivesResponse(
+            wrapInTmux("\033_Gm=0,q=2;" + PNG_BASE64_CHUNK_1 + "\033\\"),
+            "");
+        assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(425));
+    }
+
+    public void testTmuxPassthroughStreamsLargePayload() {
+        StringBuilder payload = new StringBuilder();
+        for (int i = 0; i < 21845; i++) payload.append("AAAA");
+        payload.append("AA==");
+        assertEquals(87384, payload.length());
+
+        withTerminalSized(10, 5);
+        assertEnteringStringGivesResponse(
+            wrapInTmux("\033_Ga=t,f=32,t=d,i=426,s=128,v=128,m=0;" + payload + "\033\\"),
+            "\033_Gi=426;OK\033\\");
+        assertEquals(128 * 128 * 4, mTerminal.getKittyImageDataLength(426));
+    }
+
+    public void testTmuxPassthroughWrongPrefixKeepsOrdinaryDcsBehavior() {
+        withTerminalSized(10, 2);
+        enterString("\033PtmuxX\033\\ok");
+        assertLinesAre("ok        ", "          ");
+    }
+
+    public void testTmuxPassthroughMalformedWrapperRecoversAtOuterSt() {
+        withTerminalSized(10, 2);
+        enterString("\033Ptmux;\033xdiscarded\033\\ok");
+        assertLinesAre("ok        ", "          ");
+    }
+
+    public void testTmuxPassthroughUnterminatedWrapperIsClearedByReset() {
+        withTerminalSized(10, 2);
+        enterString("\033Ptmux;\033\033_Ga=t,f=100,t=d,i=427,m=0,q=2;" + PNG_BASE64);
+        mTerminal.reset();
+        enterString("ok").assertLinesAre("ok        ", "          ");
     }
 
 
@@ -859,11 +927,57 @@ public class KittyGraphicsTest extends TerminalTestCase {
         assertEquals("", mOutput.getOutputAndClear());
     }
 
+    public void testUnicodePlaceholderPolicyIsParsed() {
+        KittyImage unicodePlaceholders = new KittyImage(null);
+        StringBuilder unicodeArgs = new StringBuilder("a=p,U=1,c=2,r=2");
+        assertEquals(unicodeArgs.length(), unicodePlaceholders.readControlData(unicodeArgs, 1));
+        assertTrue(unicodePlaceholders.usesUnicodePlaceholders());
+        assertFalse(unicodePlaceholders.shouldMoveCursor());
+
+        KittyImage ordinaryPlacement = new KittyImage(null);
+        StringBuilder ordinaryArgs = new StringBuilder("a=p,U=0,c=2,r=2");
+        assertEquals(ordinaryArgs.length(), ordinaryPlacement.readControlData(ordinaryArgs, 1));
+        assertFalse(ordinaryPlacement.usesUnicodePlaceholders());
+        assertTrue(ordinaryPlacement.shouldMoveCursor());
+
+        KittyImage invalidPolicy = new KittyImage(null);
+        StringBuilder invalidArgs = new StringBuilder("a=p,U=2");
+        assertEquals(-1, invalidPolicy.readControlData(invalidArgs, 1));
+        assertEquals(KittyImage.ERROR__EINVAL, invalidPolicy.getErrorCode());
+    }
+
+    public void testUnicodePlaceholderGridPreservesBitmapsAndCursor() {
+        withTerminalSized(6, 4);
+        addPlacement(0, true, 1, 1, 0, 0, 2);
+        addPlacement(1, true, 1, 2, 1, 0, 2);
+
+        KittyImage kittyImage = new KittyImage(null);
+        StringBuilder args = new StringBuilder("U=1,c=2,r=2");
+        assertEquals(args.length(), kittyImage.readControlData(args, 1));
+        mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {2, 2});
+
+        String placeholder = new String(Character.toChars(0x10EEEE));
+        enterString("\r" + placeholder + "\u0305\u0305" + placeholder + "\u0305\u030D"
+            + "\n\r" + placeholder + "\u030D\u0305" + placeholder + "\u030D\u030D"
+            + "\n\r");
+
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 1)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 0)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 1)));
+        assertCursorAt(2, 0);
+
+        // The suppression window is over, so ordinary private-use and combining characters print.
+        enterString("\uE000\u0302");
+        assertLineStartsWith(2, 0xE000, 0x0302);
+        assertEquals(TextStyle.NORMAL, getStyleAt(2, 0));
+    }
+
     public void testUnknownKeysAreIgnored() {
         withTerminalSized(20, 4);
 
-        // The `z` (z-index), `U` (unicode placeholder), `X` and `Y` (cell pixel offset) keys are
-        // ignored, as are keys that are not part of the protocol at all.
+        // The `z` (z-index), `X` and `Y` (cell pixel offset) keys are ignored, as are keys that are
+        // not part of the protocol at all. `U=1` is parsed as the placeholder placement policy.
         assertEnteringStringGivesResponse(
             "\033_Ga=t,f=100,t=d,i=12,m=0,z=1,U=1,X=3,Y=4,Z=9;" + PNG_BASE64 + "\033\\",
             "\033_Gi=12;OK\033\\");
@@ -872,6 +986,7 @@ public class KittyGraphicsTest extends TerminalTestCase {
         enterString("ok").assertLinesAre("ok                  ", "                    ",
             "                    ", "                    ");
     }
+
 
     public void testUnsupportedTransmissionMediumsAndCompressionRespondError() {
         withTerminalSized(20, 4);
