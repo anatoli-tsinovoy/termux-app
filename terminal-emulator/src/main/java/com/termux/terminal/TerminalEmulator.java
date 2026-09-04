@@ -3447,13 +3447,9 @@ public final class TerminalEmulator {
         Iterator<Map.Entry<Long, KittyStoredImage>> images = mKittyImages.entrySet().iterator();
         while (images.hasNext()) {
             Map.Entry<Long, KittyStoredImage> image = images.next();
-            boolean retained = false;
-            for (KittyUnicodePlaceholderGrid grid : mKittyUnicodePlaceholderGrids.values()) {
-                if (grid.imageId == image.getKey()) {
-                    retained = true;
-                    break;
-                }
-            }
+            boolean retained =
+                mMainBuffer.hasKittyUnicodePlaceholderPlacement(image.getKey()) ||
+                mAltBuffer.hasKittyUnicodePlaceholderPlacement(image.getKey());
             if (!retained) {
                 mKittyImagesTotalSize -= image.getValue().mImage.length;
                 images.remove();

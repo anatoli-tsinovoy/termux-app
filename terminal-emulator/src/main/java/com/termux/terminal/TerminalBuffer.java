@@ -839,6 +839,16 @@ public final class TerminalBuffer {
         return false;
     }
 
+    /** Whether this buffer retains a live virtual placement for an image id. */
+    synchronized boolean hasKittyUnicodePlaceholderPlacement(long kittyImageId) {
+        for (TerminalBitmap bitmap : mTerminalBitmaps.values()) {
+            if (bitmap.usesKittyUnicodePlaceholders() && bitmap.getKittyImageId() == kittyImageId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** Clear placeholder cells whose source coordinate is outside a resized virtual placement. */
     private void clearTerminalBitmapCellsOutside(TerminalBitmap bitmap) {
         if (bitmap.mCursorDelta == null || bitmap.mCursorDelta.length < 2) return;
