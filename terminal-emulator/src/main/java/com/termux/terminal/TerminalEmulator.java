@@ -4221,7 +4221,7 @@ public final class TerminalEmulator {
                 if (mKittyUnicodePlaceholderPendingDiacritics == 2 &&
                     !hasAmbiguousKittyUnicodePlaceholderLowColor(
                         mKittyUnicodePlaceholderPendingForegroundColor)) {
-                    finalizeKittyUnicodePlaceholder();
+                    applyKittyUnicodePlaceholderStyle();
                 }
                 return true;
             }
@@ -4251,10 +4251,10 @@ public final class TerminalEmulator {
     }
 
     /**
-     * Apply the bitmap style for a pending placeholder. A missing row/column uses the placement
-     * origin established by an explicit cell, matching the compact timg form.
+     * Apply the bitmap style for a pending placeholder without ending the cluster. A missing
+     * row/column uses the placement origin established by an explicit cell.
      */
-    private void finalizeKittyUnicodePlaceholder() {
+    private void applyKittyUnicodePlaceholderStyle() {
         KittyUnicodePlaceholderGrid pending = mKittyUnicodePlaceholderPendingGrid;
         if (pending == null) return;
 
@@ -4296,6 +4296,11 @@ public final class TerminalEmulator {
             }
         }
 
+    }
+
+    /** Apply the final full-id match, then end the pending placeholder cluster. */
+    private void finalizeKittyUnicodePlaceholder() {
+        applyKittyUnicodePlaceholderStyle();
         mKittyUnicodePlaceholderPendingGrid = null;
         mKittyUnicodePlaceholderPendingDiacritics = 0;
         mKittyUnicodePlaceholderBitmapRow = -1;
