@@ -1611,6 +1611,22 @@ public class KittyGraphicsTest extends TerminalTestCase {
         assertFalse(hasBitmap(0));
     }
 
+    public void testDeleteAllFreesDataAfterVirtualPlacementIsGone() {
+        withTerminalSized(20, 4);
+        final int imageId = 0x010204;
+        enterString("\033_Ga=t,f=100,t=d,i=" + imageId + ",m=0,q=2;" + PNG_BASE64 + "\033\\");
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, /* placementId */ 1);
+
+        KittyImage kittyImage = new KittyImage(null);
+        StringBuilder args = new StringBuilder("GU=1,i=" + imageId + ",p=1,c=1,r=1");
+        assertEquals(args.length(), kittyImage.readControlData(args, 1));
+        mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {1, 1});
+        mTerminal.getScreen().clearTranscript();
+
+        enterString("\033_Ga=d,d=A,q=2\033\\");
+        assertEquals(-1, mTerminal.getKittyImageDataLength(imageId));
+    }
+
     public void testDeleteOfUnknownImageIdRespondsOk() {
         withTerminalSized(20, 4);
 
