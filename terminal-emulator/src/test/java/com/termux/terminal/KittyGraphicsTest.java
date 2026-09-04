@@ -123,12 +123,27 @@ public class KittyGraphicsTest extends TerminalTestCase {
             "\033_Gi=31;OK\033\\");
     }
 
+    public void testNestedTmuxPassthroughWrappedDirectQuery() {
+        withTerminalSized(10, 5);
+        assertEnteringStringGivesResponse(
+            wrapInTmux(wrapInTmux("\033_Gi=32,s=1,v=1,a=q,t=d,f=24;AAAA\033\\")),
+            "\033_Gi=32;OK\033\\");
+    }
+
     public void testTmuxPassthroughWrappedSingleTransmit() {
         withTerminalSized(10, 5);
         assertEnteringStringGivesResponse(
             wrapInTmux("\033_Ga=t,f=100,t=d,i=424,m=0,q=2;" + PNG_BASE64 + "\033\\"),
             "");
         assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(424));
+    }
+
+    public void testNestedTmuxPassthroughWrappedSingleTransmit() {
+        withTerminalSized(10, 5);
+        assertEnteringStringGivesResponse(
+            wrapInTmux(wrapInTmux("\033_Ga=t,f=100,t=d,i=428,m=0,q=2;" + PNG_BASE64 + "\033\\")),
+            "");
+        assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(428));
     }
 
     public void testTmuxPassthroughWrappedChunkedTransmit() {
@@ -140,6 +155,17 @@ public class KittyGraphicsTest extends TerminalTestCase {
             wrapInTmux("\033_Gm=0,q=2;" + PNG_BASE64_CHUNK_1 + "\033\\"),
             "");
         assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(425));
+    }
+
+    public void testNestedTmuxPassthroughWrappedChunkedTransmit() {
+        withTerminalSized(10, 5);
+        assertEnteringStringGivesResponse(
+            wrapInTmux(wrapInTmux("\033_Ga=t,f=100,t=d,i=429,m=1,q=2;" + PNG_BASE64_CHUNK_0 + "\033\\")),
+            "");
+        assertEnteringStringGivesResponse(
+            wrapInTmux(wrapInTmux("\033_Gm=0,q=2;" + PNG_BASE64_CHUNK_1 + "\033\\")),
+            "");
+        assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(429));
     }
 
     public void testTmuxPassthroughStreamsLargePayload() {

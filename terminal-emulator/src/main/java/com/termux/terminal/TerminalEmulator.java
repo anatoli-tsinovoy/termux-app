@@ -338,15 +338,16 @@ public final class TerminalEmulator {
     private static final int TMUX_PASSTHROUGH_NONE = 0;
     private static final int TMUX_PASSTHROUGH_ACTIVE = 1;
     private static final int TMUX_PASSTHROUGH_DISCARD = 2;
+    private static final int TMUX_PASSTHROUGH_MAX_DEPTH = 8;
 
     /** The number of leading DCS characters matching {@link #TMUX_PASSTHROUGH_PREFIX}. */
     private int mTmuxPassthroughPrefixLength;
-    /** The bounded state of a tmux passthrough outer wrapper. */
-    private int mTmuxPassthroughState = TMUX_PASSTHROUGH_NONE;
-    /** Whether an outer ESC is waiting for the second framing character. */
-    private boolean mTmuxPassthroughEsc;
-    /** Whether the inner parser is currently processing decoded passthrough data. */
-    private boolean mProcessingTmuxPassthroughPayload;
+    /** Per-wrapper framing state, outermost first. */
+    private final int[] mTmuxPassthroughStates = new int[TMUX_PASSTHROUGH_MAX_DEPTH];
+    private final boolean[] mTmuxPassthroughEscapes = new boolean[TMUX_PASSTHROUGH_MAX_DEPTH];
+    private int mTmuxPassthroughDepth;
+    /** Non-zero while the normal parser is consuming decoded passthrough data. */
+    private int mProcessingTmuxPassthroughPayloadDepth;
 
 
     /** Whether processing a sixel `DCS q s..s ST` or `DCS P1; P2; P3; q s..s ST` command to create a {@link TerminalSixel}. */
@@ -940,66 +941,95 @@ public final class TerminalEmulator {
     }
 
     public void processCodePoint(int b) {
-        if (mTmuxPassthroughState != TMUX_PASSTHROUGH_NONE) {
-            processTmuxPassthroughCodePoint(b);
+        if (mTmuxPassthroughDepth > 0) {
+            processTmuxPassthroughCodePoint(0, b);
             return;
         }
         processCodePointInternal(b);
     }
 
     /**
-     * Decode one code point from a tmux passthrough outer wrapper. The
-     * decoded code point is handed directly to the normal parser so the
-     * wrapper state remains independent of the inner escape state.
+     * Decode one code point at one tmux passthrough layer. Decoded bytes are
+     * routed through the next wrapper, if present, before reaching the normal
+     * terminal parser.
      */
-    private void processTmuxPassthroughCodePoint(int b) {
-        if (mTmuxPassthroughEsc) {
-            mTmuxPassthroughEsc = false;
+    private void processTmuxPassthroughCodePoint(int layer, int b) {
+        if (layer >= mTmuxPassthroughDepth) return;
+
+        if (mTmuxPassthroughEscapes[layer]) {
+            mTmuxPassthroughEscapes[layer] = false;
             if (b == 27) {
-                if (mTmuxPassthroughState == TMUX_PASSTHROUGH_ACTIVE) {
-                    mProcessingTmuxPassthroughPayload = true;
-                    processCodePointInternal(27);
-                    mProcessingTmuxPassthroughPayload = false;
+                if (mTmuxPassthroughStates[layer] == TMUX_PASSTHROUGH_ACTIVE) {
+                    processTmuxPassthroughPayloadCodePoint(layer, 27);
                 }
             } else if (b == '\\') {
-                finishTmuxPassthrough(mTmuxPassthroughState == TMUX_PASSTHROUGH_DISCARD);
+                finishTmuxPassthrough(layer, mTmuxPassthroughStates[layer] == TMUX_PASSTHROUGH_DISCARD);
             } else {
-                // An ESC followed by anything other than ESC or ST is
-                // malformed outer framing. Discard through the outer ST.
-                clearTerminalControlArgs();
-                clearDcsTypeVariables();
-                clearOscTypeVariables();
-                clearApcTypeVariables();
+                // Malformed framing is fail-closed. Drop incomplete nested
+                // wrappers and discard through this wrapper's own ST.
+                clearTmuxPassthroughInnerState();
+                mITermImage = null;
                 mKittyImage = null;
-                mEscapeState = ESC_NONE;
-                mTmuxPassthroughState = TMUX_PASSTHROUGH_DISCARD;
+                mTmuxPassthroughDepth = layer + 1;
+                mTmuxPassthroughStates[layer] = TMUX_PASSTHROUGH_DISCARD;
             }
             return;
         }
 
         if (b == 27) {
-            mTmuxPassthroughEsc = true;
-        } else if (mTmuxPassthroughState == TMUX_PASSTHROUGH_ACTIVE) {
-            mProcessingTmuxPassthroughPayload = true;
-            processCodePointInternal(b);
-            mProcessingTmuxPassthroughPayload = false;
+            mTmuxPassthroughEscapes[layer] = true;
+        } else if (mTmuxPassthroughStates[layer] == TMUX_PASSTHROUGH_ACTIVE) {
+            processTmuxPassthroughPayloadCodePoint(layer, b);
         }
     }
 
-    /** Finish a tmux passthrough wrapper, dropping any unfinished inner command. */
-    private void finishTmuxPassthrough(boolean malformed) {
-        boolean incompleteInnerSequence = mEscapeState != ESC_NONE || mKittyGraphicsPayload != null;
-        mTmuxPassthroughState = TMUX_PASSTHROUGH_NONE;
-        mTmuxPassthroughEsc = false;
-        mProcessingTmuxPassthroughPayload = false;
-        clearTerminalControlArgs();
-        clearDcsTypeVariables();
-        clearOscTypeVariables();
-        clearApcTypeVariables();
+    private void processTmuxPassthroughPayloadCodePoint(int layer, int b) {
+        if (layer + 1 < mTmuxPassthroughDepth) {
+            processTmuxPassthroughCodePoint(layer + 1, b);
+        } else {
+            mProcessingTmuxPassthroughPayloadDepth++;
+            try {
+                processCodePointInternal(b);
+            } finally {
+                mProcessingTmuxPassthroughPayloadDepth--;
+            }
+        }
+    }
+
+    /** Start a wrapper recognized in the decoded payload of its parent. */
+    private void startTmuxPassthrough() {
+        if (mTmuxPassthroughDepth == TMUX_PASSTHROUGH_MAX_DEPTH) {
+            // No unbounded state or text leakage on adversarial nesting.
+            clearTmuxPassthroughInnerState();
+            mITermImage = null;
+            mKittyImage = null;
+            mTmuxPassthroughStates[mTmuxPassthroughDepth - 1] = TMUX_PASSTHROUGH_DISCARD;
+            return;
+        }
+        int layer = mTmuxPassthroughDepth++;
+        mTmuxPassthroughStates[layer] = TMUX_PASSTHROUGH_ACTIVE;
+        mTmuxPassthroughEscapes[layer] = false;
+    }
+
+    /** Finish one wrapper, dropping any unfinished command or child wrapper. */
+    private void finishTmuxPassthrough(int layer, boolean malformed) {
+        boolean incompleteInnerSequence = layer + 1 < mTmuxPassthroughDepth ||
+            mEscapeState != ESC_NONE || mKittyGraphicsPayload != null;
+        mTmuxPassthroughDepth = layer;
+        mTmuxPassthroughStates[layer] = TMUX_PASSTHROUGH_NONE;
+        mTmuxPassthroughEscapes[layer] = false;
+        clearTmuxPassthroughInnerState();
         if (malformed || incompleteInnerSequence) {
             mITermImage = null;
             mKittyImage = null;
         }
+    }
+
+    private void clearTmuxPassthroughInnerState() {
+        clearTerminalControlArgs();
+        clearDcsTypeVariables();
+        clearOscTypeVariables();
+        clearApcTypeVariables();
         mEscapeState = ESC_NONE;
     }
 
@@ -1404,8 +1434,7 @@ public final class TerminalEmulator {
                     // the normal bounded argument buffer.
                     clearTerminalControlArgs();
                     mTmuxPassthroughPrefixLength = -1;
-                    mTmuxPassthroughState = TMUX_PASSTHROUGH_ACTIVE;
-                    mTmuxPassthroughEsc = false;
+                    startTmuxPassthrough();
                     mContinueSequence = false;
                     finishSequence();
                 }
@@ -4386,9 +4415,8 @@ public final class TerminalEmulator {
 
     /** Reset terminal state so user can interact with it regardless of present state. */
     public void reset() {
-        if (!mProcessingTmuxPassthroughPayload) {
-            mTmuxPassthroughState = TMUX_PASSTHROUGH_NONE;
-            mTmuxPassthroughEsc = false;
+        if (mProcessingTmuxPassthroughPayloadDepth == 0) {
+            mTmuxPassthroughDepth = 0;
             mTmuxPassthroughPrefixLength = 0;
         }
         mKittyUnicodePlaceholderGrids.clear();
