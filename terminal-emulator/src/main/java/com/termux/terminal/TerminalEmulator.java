@@ -3283,14 +3283,27 @@ public final class TerminalEmulator {
             return;
         }
 
-        // A non-zero image and placement id pair identifies a placement globally across both
-        // buffers. Delete the previous placement only after the replacement has been built.
-        if (kittyImage.getImageId() != KittyImage.IMAGE_ID__NONE &&
+        boolean replacedCurrentVirtualPlacement = false;
+        boolean replacedAnyVirtualPlacement = false;
+        if (kittyImage.usesUnicodePlaceholders() &&
+            kittyImage.getImageId() != KittyImage.IMAGE_ID__NONE &&
             kittyImage.getPlacementId() != KittyImage.PLACEMENT_ID__NONE) {
-            deleteKittyImagePlacementsAcrossBuffers(kittyImage.getImageId(), kittyImage.getPlacementId());
+            boolean replacedMain = mMainBuffer.replaceKittyUnicodePlaceholderPlacement(terminalBitmap);
+            boolean replacedAlternate = mAltBuffer.replaceKittyUnicodePlaceholderPlacement(terminalBitmap);
+            replacedCurrentVirtualPlacement = mScreen == mMainBuffer ? replacedMain : replacedAlternate;
+            replacedAnyVirtualPlacement = replacedMain || replacedAlternate;
         }
 
-        mScreen.addTerminalBitmap(terminalBitmap);
+        // Real images drawn over Unicode placeholders are terminal cells, not graphics placements.
+        // Preserve them when replacing their virtual prototype; tmux may repaint only changed rows.
+        if (!replacedCurrentVirtualPlacement) {
+            if (!replacedAnyVirtualPlacement &&
+                kittyImage.getImageId() != KittyImage.IMAGE_ID__NONE &&
+                kittyImage.getPlacementId() != KittyImage.PLACEMENT_ID__NONE) {
+                deleteKittyImagePlacementsAcrossBuffers(kittyImage.getImageId(), kittyImage.getPlacementId());
+            }
+            mScreen.addTerminalBitmap(terminalBitmap);
+        }
         mScreen.doTerminalBitmapsGC(30000);
         if (kittyImage.usesUnicodePlaceholders()) {
             startKittyUnicodePlaceholderGrid(kittyImage, cursorDelta);
@@ -3331,13 +3344,11 @@ public final class TerminalEmulator {
             case KittyImage.DELETE_MODE__NONE: // The `d` key defaults to `d=a`.
             case KittyImage.DELETE_MODE__ALL:
             case KittyImage.DELETE_MODE__ALL_AND_FREE_DATA:
-                // All the placements are deleted regardless of the image id passed as per the protocol.
+                // `d=a`/`d=A` affect visible placements only. Virtual U=1 placements have no
+                // physical location; the real images over their placeholders are terminal text.
                 mScreen.deleteAllKittyImagePlacements();
-                mKittyUnicodePlaceholderGrids.clear();
-                mKittyUnicodePlaceholderPendingGrid = null;
-                mKittyUnicodePlaceholderPendingDiacritics = 0;
                 if (deleteMode == KittyImage.DELETE_MODE__ALL_AND_FREE_DATA) {
-                    clearKittyImages();
+                    removeKittyImagesWithoutUnicodePlaceholders();
                 }
                 break;
             case KittyImage.DELETE_MODE__ID:
@@ -3350,7 +3361,7 @@ public final class TerminalEmulator {
 
                 // Deleting an image that does not exist is not an error as per the protocol. Only
                 // the placement passed with the `p` key is deleted if it is passed.
-                mScreen.deleteKittyImagePlacements(imageId, kittyImage.getPlacementId());
+                deleteKittyImagePlacementsAcrossBuffers(imageId, kittyImage.getPlacementId());
                 mKittyUnicodePlaceholderGrids.remove(
                     0xff000000 | ((int) imageId & 0x00ffffff));
                 if (mKittyUnicodePlaceholderPendingGrid != null &&
@@ -3430,6 +3441,26 @@ public final class TerminalEmulator {
             mKittyImagesTotalSize -= storedImage.mImage.length;
         }
     }
+
+    /** Free image data that is not retained by a virtual Unicode placeholder placement. */
+    private void removeKittyImagesWithoutUnicodePlaceholders() {
+        Iterator<Map.Entry<Long, KittyStoredImage>> images = mKittyImages.entrySet().iterator();
+        while (images.hasNext()) {
+            Map.Entry<Long, KittyStoredImage> image = images.next();
+            boolean retained = false;
+            for (KittyUnicodePlaceholderGrid grid : mKittyUnicodePlaceholderGrids.values()) {
+                if (grid.imageId == image.getKey()) {
+                    retained = true;
+                    break;
+                }
+            }
+            if (!retained) {
+                mKittyImagesTotalSize -= image.getValue().mImage.length;
+                images.remove();
+            }
+        }
+    }
+
 
     /** Remove the image data stored for all the kitty graphics image ids. */
     private void clearKittyImages() {
