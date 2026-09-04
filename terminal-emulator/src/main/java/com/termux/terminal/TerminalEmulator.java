@@ -4183,6 +4183,17 @@ public final class TerminalEmulator {
         }
         return result;
     }
+    /** Whether the optional MSB diacritic is required to distinguish active images. */
+    private boolean hasAmbiguousKittyUnicodePlaceholderLowColor(int lowColor) {
+        boolean found = false;
+        for (KittyUnicodePlaceholderGrid grid : mKittyUnicodePlaceholderGrids.values()) {
+            if ((grid.imageId & 0x00ffffffL) != (lowColor & 0x00ffffffL)) continue;
+            if (found) return true;
+            found = true;
+        }
+        return false;
+    }
+
 
     /**
      * Consume a U=1 placeholder cluster. The placeholder remains ordinary text in the row; only
@@ -4205,6 +4216,13 @@ public final class TerminalEmulator {
                 mScreen.setChar(mKittyUnicodePlaceholderPendingColumn,
                     mKittyUnicodePlaceholderPendingRow, codePoint, getStyle());
                 mKittyUnicodePlaceholderPendingDiacritics++;
+                // Two marks complete the common form. Only wait for the optional image-id MSB
+                // when active images collide in their low 24 foreground-color bits.
+                if (mKittyUnicodePlaceholderPendingDiacritics == 2 &&
+                    !hasAmbiguousKittyUnicodePlaceholderLowColor(
+                        mKittyUnicodePlaceholderPendingForegroundColor)) {
+                    finalizeKittyUnicodePlaceholder();
+                }
                 return true;
             }
             finalizeKittyUnicodePlaceholder();
