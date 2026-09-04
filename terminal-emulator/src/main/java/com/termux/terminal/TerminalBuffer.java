@@ -417,6 +417,10 @@ public final class TerminalBuffer {
 
         // Handle cursor scrolling off screen:
         if (cursor[0] < 0 || cursor[1] < 0) cursor[0] = cursor[1] = 0;
+
+        // Resizing can discard direct placement cells. Virtual placements have no cells and are
+        // intentionally retained for future U+10EEEE clusters.
+        releaseUnreferencedTerminalBitmaps(new HashSet<>(mTerminalBitmaps.keySet()));
     }
 
     /**
@@ -536,6 +540,14 @@ public final class TerminalBuffer {
         allocateFullLineIfNecessary(row).setChar(column, codePoint, style);
     }
 
+    /** Update a cell style without replacing its text or combining characters. */
+    void setStyle(int column, int row, long style) {
+        if (row < 0 || row >= mScreenRows || column < 0 || column >= mColumns)
+            throw new IllegalArgumentException("TerminalBuffer.setStyle(): row=" + row + ", column=" + column + ", mScreenRows=" + mScreenRows + ", mColumns=" + mColumns);
+        row = externalToInternalRow(row);
+        allocateFullLineIfNecessary(row).setStyle(column, style);
+    }
+
     public long getStyleAt(int externalRow, int column) {
         return allocateFullLineIfNecessary(externalToInternalRow(externalRow)).getStyle(column);
     }
@@ -573,7 +585,10 @@ public final class TerminalBuffer {
             Arrays.fill(mLines, mScreenFirstRow - mActiveTranscriptRows, mScreenFirstRow, null);
         }
         mActiveTranscriptRows = 0;
-        clearTerminalBitmaps();
+
+        // Virtual Kitty placements have no screen cells and must survive transcript clearing.
+        // Only direct placements that are no longer referenced by any remaining row are released.
+        releaseUnreferencedTerminalBitmaps(new HashSet<>(mTerminalBitmaps.keySet()));
     }
 
 
@@ -586,15 +601,25 @@ public final class TerminalBuffer {
     /**
      * Return the style for one cell of a loaded kitty image placement. Unicode placeholders may
      * arrive after tmux has redrawn over the provisional cells installed by the graphics APC.
+     *
+     * <p>Prefer a virtual placement when one exists for the image, but retain the fallback to an
+     * ordinary kitty placement for callers and tests that construct a prototype directly.
      */
     synchronized long getKittyImageCellStyle(long imageId, int x, int y) {
+        TerminalBitmap fallback = null;
+        int fallbackNum = -1;
         for (Map.Entry<Integer, TerminalBitmap> entry : mTerminalBitmaps.entrySet()) {
             TerminalBitmap bitmap = entry.getValue();
-            if (bitmap.isKittyImage() && bitmap.getKittyImageId() == imageId) {
+            if (!bitmap.isKittyImage() || bitmap.getKittyImageId() != imageId) continue;
+            if (bitmap.usesKittyUnicodePlaceholders()) {
                 return TextStyle.encodeTerminalBitmap(entry.getKey(), x, y);
             }
+            if (fallback == null) {
+                fallback = bitmap;
+                fallbackNum = entry.getKey();
+            }
         }
-        return -1;
+        return fallback != null ? TextStyle.encodeTerminalBitmap(fallbackNum, x, y) : -1;
     }
 
 
@@ -848,6 +873,37 @@ public final class TerminalBuffer {
         }
         return false;
     }
+    /** Whether this buffer retains a virtual placement with the given image and placement ids. */
+    synchronized boolean hasKittyUnicodePlaceholderPlacement(long kittyImageId, long kittyPlacementId) {
+        for (TerminalBitmap bitmap : mTerminalBitmaps.values()) {
+            if (bitmap.usesKittyUnicodePlaceholders() &&
+                bitmap.getKittyImageId() == kittyImageId &&
+                bitmap.getKittyPlacementId() == kittyPlacementId) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Ensure that the other screen buffer has a copy of a virtual Kitty placement. Virtual
+     * placements have no cells, so sharing the decoded bitmap is safe; each buffer still needs its
+     * own bitmap number because cell styles are local to a buffer.
+     */
+    synchronized void ensureKittyUnicodePlaceholderPlacement(TerminalBitmap template) {
+        if (!template.usesKittyUnicodePlaceholders()) return;
+        if (hasKittyUnicodePlaceholderPlacement(template.getKittyImageId(), template.getKittyPlacementId())) {
+            return;
+        }
+        int bitmapNum = getFreeTerminalBitmapNum();
+        if (bitmapNum < TERMINAL_BITMAP__NUM_START) return;
+        TerminalBitmap copy = new TerminalBitmap(getClient(), bitmapNum, template.mBitmap,
+            template.mCellWidth, template.mCellHeight, template.mScrollLines, template.mCursorDelta);
+        copy.setKittyImage(template.getKittyImageId(), template.getKittyPlacementId());
+        copy.setKittyUnicodePlaceholder(true);
+        addTerminalBitmap(copy);
+    }
+
 
     /** Clear placeholder cells whose source coordinate is outside a resized virtual placement. */
     private void clearTerminalBitmapCellsOutside(TerminalBitmap bitmap) {

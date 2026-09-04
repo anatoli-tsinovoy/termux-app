@@ -489,14 +489,17 @@ public final class TerminalEmulator {
         0x1D187, 0x1D188, 0x1D189, 0x1D1AA, 0x1D1AB, 0x1D1AC, 0x1D1AD,
         0x1D242, 0x1D243, 0x1D244
     };
-    /** Active grids keyed by the low 24 image-id bits encoded in true foreground color. */
-    private final LinkedHashMap<Integer, KittyUnicodePlaceholderGrid> mKittyUnicodePlaceholderGrids =
+    /** Active grids keyed by their full image id. Matching by low 24 foreground bits is done on lookup. */
+    private final LinkedHashMap<Long, KittyUnicodePlaceholderGrid> mKittyUnicodePlaceholderGrids =
         new LinkedHashMap<>();
     private KittyUnicodePlaceholderGrid mKittyUnicodePlaceholderPendingGrid;
     private int mKittyUnicodePlaceholderPendingColumn;
     private int mKittyUnicodePlaceholderPendingRow;
     private int mKittyUnicodePlaceholderPendingDiacritics;
-    private int mKittyUnicodePlaceholderBitmapRow;
+    private int mKittyUnicodePlaceholderBitmapRow = -1;
+    private int mKittyUnicodePlaceholderBitmapColumn = -1;
+    private int mKittyUnicodePlaceholderBitmapHigh = -1;
+    private int mKittyUnicodePlaceholderPendingForegroundColor;
 
 
     /**
@@ -3304,6 +3307,14 @@ public final class TerminalEmulator {
             }
             mScreen.addTerminalBitmap(terminalBitmap);
         }
+
+        // A virtual placement has no cells, so retain its bitmap metadata in both screen buffers.
+        // This lets placeholders continue to resolve after an alternate-buffer switch.
+        if (kittyImage.usesUnicodePlaceholders()) {
+            mMainBuffer.ensureKittyUnicodePlaceholderPlacement(terminalBitmap);
+            mAltBuffer.ensureKittyUnicodePlaceholderPlacement(terminalBitmap);
+        }
+
         mScreen.doTerminalBitmapsGC(30000);
         if (kittyImage.usesUnicodePlaceholders()) {
             startKittyUnicodePlaceholderGrid(kittyImage, cursorDelta);
@@ -3323,18 +3334,25 @@ public final class TerminalEmulator {
     void startKittyUnicodePlaceholderGrid(KittyImage kittyImage, int[] cursorDelta) {
         int rows = kittyImage.mRows > 0 ? kittyImage.mRows : cursorDelta[0];
         int columns = kittyImage.mColumns > 0 ? kittyImage.mColumns : cursorDelta[1];
-        if (rows < 1 || columns < 1 || kittyImage.getImageId() == KittyImage.IMAGE_ID__NONE) return;
+        long imageId = kittyImage.getImageId();
+        if (rows < 1 || columns < 1 || imageId == KittyImage.IMAGE_ID__NONE) return;
 
-        int imageColor = 0xff000000 | ((int) kittyImage.getImageId() & 0x00ffffff);
-        mKittyUnicodePlaceholderGrids.put(imageColor,
-            new KittyUnicodePlaceholderGrid(kittyImage.getImageId(), rows, columns));
+        mKittyUnicodePlaceholderGrids.put(imageId,
+            new KittyUnicodePlaceholderGrid(imageId, rows, columns));
         while (mKittyUnicodePlaceholderGrids.size() > KITTY_IMAGES__MAX_COUNT) {
-            Iterator<Integer> iterator = mKittyUnicodePlaceholderGrids.keySet().iterator();
+            Iterator<Long> iterator = mKittyUnicodePlaceholderGrids.keySet().iterator();
             iterator.next();
             iterator.remove();
         }
         mKittyUnicodePlaceholderPendingGrid = null;
         mKittyUnicodePlaceholderPendingDiacritics = 0;
+        mKittyUnicodePlaceholderBitmapRow = -1;
+        mKittyUnicodePlaceholderBitmapColumn = -1;
+        mKittyUnicodePlaceholderBitmapHigh = -1;
+
+        // APC data can arrive after tmux has already stored the placeholder text. Resolve those
+        // rows now, without rewriting the U+10EEEE base character.
+        resolveStoredKittyUnicodePlaceholders();
     }
 
     /** Do a kitty graphics `a=d` command. */
@@ -3362,12 +3380,13 @@ public final class TerminalEmulator {
                 // Deleting an image that does not exist is not an error as per the protocol. Only
                 // the placement passed with the `p` key is deleted if it is passed.
                 deleteKittyImagePlacementsAcrossBuffers(imageId, kittyImage.getPlacementId());
-                mKittyUnicodePlaceholderGrids.remove(
-                    0xff000000 | ((int) imageId & 0x00ffffff));
+                Iterator<Long> grids = mKittyUnicodePlaceholderGrids.keySet().iterator();
+                while (grids.hasNext()) {
+                    if (grids.next() == imageId) grids.remove();
+                }
                 if (mKittyUnicodePlaceholderPendingGrid != null &&
                     mKittyUnicodePlaceholderPendingGrid.imageId == imageId) {
-                    mKittyUnicodePlaceholderPendingGrid = null;
-                    mKittyUnicodePlaceholderPendingDiacritics = 0;
+                    finalizeKittyUnicodePlaceholder();
                 }
                 if (deleteMode == KittyImage.DELETE_MODE__ID_AND_FREE_DATA) {
                     removeKittyImage(imageId);
@@ -4146,9 +4165,29 @@ public final class TerminalEmulator {
         mEscapeState = ESC_NONE;
     }
 
+    private static int kittyUnicodePlaceholderLowColor(int foregroundColor) {
+        return foregroundColor & 0x00ffffff;
+    }
+
+    /** Find a virtual image by the foreground's low 24 bits and optional MSB byte. */
+    private KittyUnicodePlaceholderGrid findKittyUnicodePlaceholderGrid(int lowColor,
+                                                                          int highByte,
+                                                                          boolean hasHighByte) {
+        KittyUnicodePlaceholderGrid result = null;
+        for (KittyUnicodePlaceholderGrid grid : mKittyUnicodePlaceholderGrids.values()) {
+            long imageId = grid.imageId;
+            if ((imageId & 0x00ffffffL) != (lowColor & 0x00ffffffL)) continue;
+            if (hasHighByte && ((imageId >>> 24) & 0xffL) != (highByte & 0xffL)) continue;
+            result = grid;
+            if (hasHighByte) return result;
+        }
+        return result;
+    }
+
     /**
-     * Consume a U=1 placeholder cluster and map its addressed source cell to the current text cell.
-     * Returning true means the code point must not be written as ordinary text.
+     * Consume a U=1 placeholder cluster. The placeholder remains ordinary text in the row; only
+     * its style is changed once the cluster ends, so the base and its combining marks survive tmux
+     * redraws, transcript extraction, and resize.
      */
     private boolean consumeKittyUnicodePlaceholder(int codePoint) {
         int diacritic = Arrays.binarySearch(KITTY_UNICODE_PLACEHOLDER_DIACRITICS, codePoint);
@@ -4157,17 +4196,14 @@ public final class TerminalEmulator {
                 if (mKittyUnicodePlaceholderPendingDiacritics == 0) {
                     mKittyUnicodePlaceholderBitmapRow = diacritic;
                 } else if (mKittyUnicodePlaceholderPendingDiacritics == 1) {
-                    KittyUnicodePlaceholderGrid grid = mKittyUnicodePlaceholderPendingGrid;
-                    int sourceRow = mKittyUnicodePlaceholderBitmapRow;
-                    int sourceColumn = diacritic;
-                    if (sourceRow >= 0 && sourceRow < grid.rows &&
-                        sourceColumn >= 0 && sourceColumn < grid.columns) {
-                        grid.originColumn = mKittyUnicodePlaceholderPendingColumn - sourceColumn;
-                        grid.originRow = mKittyUnicodePlaceholderPendingRow - sourceRow;
-                        grid.hasOrigin = true;
-                        writeKittyUnicodePlaceholderCell(sourceColumn, sourceRow);
-                    }
+                    mKittyUnicodePlaceholderBitmapColumn = diacritic;
+                } else {
+                    mKittyUnicodePlaceholderBitmapHigh = diacritic;
                 }
+                // Keep each mark in the stored cluster. The cursor has already advanced over the
+                // base, so address the destination cell explicitly.
+                mScreen.setChar(mKittyUnicodePlaceholderPendingColumn,
+                    mKittyUnicodePlaceholderPendingRow, codePoint, getStyle());
                 mKittyUnicodePlaceholderPendingDiacritics++;
                 return true;
             }
@@ -4175,12 +4211,20 @@ public final class TerminalEmulator {
         }
 
         if (codePoint == KITTY_UNICODE_PLACEHOLDER) {
-            KittyUnicodePlaceholderGrid grid = mKittyUnicodePlaceholderGrids.get(mForeColor);
+            int lowColor = kittyUnicodePlaceholderLowColor(mForeColor);
+            KittyUnicodePlaceholderGrid grid = findKittyUnicodePlaceholderGrid(lowColor, -1, false);
             if (grid != null) {
                 mKittyUnicodePlaceholderPendingGrid = grid;
+                mKittyUnicodePlaceholderPendingForegroundColor = lowColor;
                 mKittyUnicodePlaceholderPendingColumn = mCursorCol;
                 mKittyUnicodePlaceholderPendingRow = mCursorRow;
                 mKittyUnicodePlaceholderPendingDiacritics = 0;
+                mKittyUnicodePlaceholderBitmapRow = -1;
+                mKittyUnicodePlaceholderBitmapColumn = -1;
+                mKittyUnicodePlaceholderBitmapHigh = -1;
+
+                // Store the PUA base as normal text before advancing the cursor.
+                mScreen.setChar(mCursorCol, mCursorRow, codePoint, getStyle());
                 advanceCursorOverKittyUnicodePlaceholder();
                 return true;
             }
@@ -4189,43 +4233,184 @@ public final class TerminalEmulator {
     }
 
     /**
-     * Write exactly one pending placeholder destination. A non-negative source row and column are
-     * explicitly addressed by combining marks; negative values request the destination-relative
-     * source used for a bare or incomplete cluster.
+     * Apply the bitmap style for a pending placeholder. A missing row/column uses the placement
+     * origin established by an explicit cell, matching the compact timg form.
      */
-    private void writeKittyUnicodePlaceholderCell(int sourceColumn, int sourceRow) {
-        KittyUnicodePlaceholderGrid grid = mKittyUnicodePlaceholderPendingGrid;
-        if (grid == null) return;
-        if (sourceColumn < 0 || sourceRow < 0) {
-            if (!grid.hasOrigin) return;
-            sourceColumn = mKittyUnicodePlaceholderPendingColumn - grid.originColumn;
-            sourceRow = mKittyUnicodePlaceholderPendingRow - grid.originRow;
-        }
-        if (sourceColumn < 0 || sourceColumn >= grid.columns ||
-            sourceRow < 0 || sourceRow >= grid.rows ||
-            mKittyUnicodePlaceholderPendingColumn < 0 ||
-            mKittyUnicodePlaceholderPendingColumn >= mColumns ||
-            mKittyUnicodePlaceholderPendingRow < 0 ||
-            mKittyUnicodePlaceholderPendingRow >= mRows) {
-            return;
-        }
-
-        long bitmapStyle = mScreen.getKittyImageCellStyle(grid.imageId, sourceColumn, sourceRow);
-        if (bitmapStyle != -1) {
-            mScreen.setChar(mKittyUnicodePlaceholderPendingColumn,
-                mKittyUnicodePlaceholderPendingRow, ' ', bitmapStyle);
-        }
-    }
-
-    /** Finish a pending placeholder cluster, using its destination-relative source when possible. */
     private void finalizeKittyUnicodePlaceholder() {
-        if (mKittyUnicodePlaceholderPendingGrid == null) return;
-        if (mKittyUnicodePlaceholderPendingDiacritics < 2) {
-            writeKittyUnicodePlaceholderCell(-1, -1);
+        KittyUnicodePlaceholderGrid pending = mKittyUnicodePlaceholderPendingGrid;
+        if (pending == null) return;
+
+        int sourceRow = mKittyUnicodePlaceholderBitmapRow;
+        int sourceColumn = mKittyUnicodePlaceholderBitmapColumn;
+        boolean hasHighByte = mKittyUnicodePlaceholderPendingDiacritics >= 3;
+        int highByte = mKittyUnicodePlaceholderBitmapHigh;
+        KittyUnicodePlaceholderGrid grid = findKittyUnicodePlaceholderGrid(
+            mKittyUnicodePlaceholderPendingForegroundColor, highByte, hasHighByte);
+
+        if (grid != null) {
+            if (mKittyUnicodePlaceholderPendingDiacritics < 2) {
+                if (grid.hasOrigin) {
+                    sourceColumn = mKittyUnicodePlaceholderPendingColumn - grid.originColumn;
+                    sourceRow = mKittyUnicodePlaceholderPendingRow - grid.originRow;
+                } else {
+                    sourceColumn = -1;
+                    sourceRow = -1;
+                }
+            }
+
+            if (sourceColumn >= 0 && sourceColumn < grid.columns &&
+                sourceRow >= 0 && sourceRow < grid.rows &&
+                mKittyUnicodePlaceholderPendingColumn >= 0 &&
+                mKittyUnicodePlaceholderPendingColumn < mColumns &&
+                mKittyUnicodePlaceholderPendingRow >= 0 &&
+                mKittyUnicodePlaceholderPendingRow < mRows) {
+                if (mKittyUnicodePlaceholderPendingDiacritics >= 2 &&
+                    (!grid.hasOrigin || (sourceRow == 0 && sourceColumn == 0))) {
+                    grid.originColumn = mKittyUnicodePlaceholderPendingColumn - sourceColumn;
+                    grid.originRow = mKittyUnicodePlaceholderPendingRow - sourceRow;
+                    grid.hasOrigin = true;
+                }
+                long bitmapStyle = mScreen.getKittyImageCellStyle(grid.imageId, sourceColumn, sourceRow);
+                if (bitmapStyle != -1) {
+                    mScreen.setStyle(mKittyUnicodePlaceholderPendingColumn,
+                        mKittyUnicodePlaceholderPendingRow, bitmapStyle);
+                }
+            }
         }
+
         mKittyUnicodePlaceholderPendingGrid = null;
         mKittyUnicodePlaceholderPendingDiacritics = 0;
+        mKittyUnicodePlaceholderBitmapRow = -1;
+        mKittyUnicodePlaceholderBitmapColumn = -1;
+        mKittyUnicodePlaceholderBitmapHigh = -1;
     }
+
+    /** Convert an internal circular-buffer row to its external transcript/screen coordinate. */
+    private static int kittyUnicodeExternalRow(TerminalBuffer buffer, int internalRow) {
+        int row = internalRow - buffer.mScreenFirstRow;
+        if (row < 0) row += buffer.mTotalRows;
+        if (row >= buffer.mTotalRows / 2) row -= buffer.mTotalRows;
+        return row;
+    }
+
+    /**
+     * Resolve U+10EEEE clusters that were stored as text before their APC metadata arrived.
+     * This runs only when a virtual placement is created, not on normal text output.
+     */
+    private void resolveStoredKittyUnicodePlaceholders() {
+        resolveStoredKittyUnicodePlaceholders(mMainBuffer);
+        resolveStoredKittyUnicodePlaceholders(mAltBuffer);
+    }
+
+    private void resolveStoredKittyUnicodePlaceholders(TerminalBuffer buffer) {
+        for (int internalRow = 0; internalRow < buffer.mLines.length; internalRow++) {
+            TerminalRow line = buffer.mLines[internalRow];
+            if (line == null) continue;
+
+            char[] text = line.mText;
+            int textIndex = 0;
+            int column = 0;
+            int destinationRow = kittyUnicodeExternalRow(buffer, internalRow);
+
+            int previousForeground = -1;
+            int previousRow = -1;
+            int previousColumn = -1;
+            int previousDestinationColumn = -2;
+            int previousHigh = -1;
+            boolean previousHasHigh = false;
+            boolean previousValid = false;
+
+            while (textIndex < line.getSpaceUsed() && column < buffer.mColumns) {
+                int codePoint = text[textIndex++];
+                if (Character.isHighSurrogate((char) codePoint) && textIndex < line.getSpaceUsed()) {
+                    codePoint = Character.toCodePoint((char) codePoint, text[textIndex++]);
+                }
+                int displayWidth = WcWidth.width(codePoint);
+                if (displayWidth <= 0) continue;
+
+                int destinationColumn = column;
+                column += displayWidth;
+                if (codePoint != KITTY_UNICODE_PLACEHOLDER) continue;
+
+                int markCount = 0;
+                int sourceRow = -1;
+                int sourceColumn = -1;
+                int highByte = -1;
+                int markIndex = textIndex;
+                while (markIndex < line.getSpaceUsed()) {
+                    int mark = text[markIndex++];
+                    if (Character.isHighSurrogate((char) mark) && markIndex < line.getSpaceUsed()) {
+                        mark = Character.toCodePoint((char) mark, text[markIndex++]);
+                    }
+                    if (WcWidth.width(mark) > 0) {
+                        markIndex -= Character.charCount(mark);
+                        break;
+                    }
+                    int markValue = Arrays.binarySearch(KITTY_UNICODE_PLACEHOLDER_DIACRITICS, mark);
+                    if (markValue >= 0 && markCount < 3) {
+                        if (markCount == 0) sourceRow = markValue;
+                        else if (markCount == 1) sourceColumn = markValue;
+                        else highByte = markValue;
+                        markCount++;
+                    }
+                }
+                textIndex = markIndex;
+
+                long style = line.getStyle(destinationColumn);
+                if (TextStyle.isTerminalBitmap(style)) continue;
+                int foreground = kittyUnicodePlaceholderLowColor(TextStyle.decodeForeColor(style));
+                boolean inheritedHigh = false;
+
+                if (markCount == 0 && previousValid && previousForeground == foreground &&
+                    destinationColumn == previousDestinationColumn + 1) {
+                    sourceRow = previousRow;
+                    sourceColumn = previousColumn + 1;
+                    highByte = previousHigh;
+                    inheritedHigh = previousHasHigh;
+                } else if (markCount == 1 && previousValid && previousForeground == foreground &&
+                    sourceRow == previousRow && destinationColumn == previousDestinationColumn + 1) {
+                    sourceColumn = previousColumn + 1;
+                    highByte = previousHigh;
+                    inheritedHigh = previousHasHigh;
+                } else if (markCount == 2 && previousValid && previousForeground == foreground &&
+                    sourceRow == previousRow && sourceColumn == previousColumn + 1) {
+                    highByte = previousHigh;
+                    inheritedHigh = previousHasHigh;
+                }
+
+                boolean exactHigh = markCount >= 3 || inheritedHigh;
+                KittyUnicodePlaceholderGrid grid = findKittyUnicodePlaceholderGrid(
+                    foreground, highByte, exactHigh);
+                if (grid != null) {
+                    if (markCount < 2 && grid.hasOrigin) {
+                        sourceColumn = destinationColumn - grid.originColumn;
+                        sourceRow = destinationRow - grid.originRow;
+                    }
+
+                    if (sourceColumn >= 0 && sourceColumn < grid.columns &&
+                        sourceRow >= 0 && sourceRow < grid.rows) {
+                        if (markCount >= 2 && (!grid.hasOrigin || (sourceRow == 0 && sourceColumn == 0))) {
+                            grid.originColumn = destinationColumn - sourceColumn;
+                            grid.originRow = destinationRow - sourceRow;
+                            grid.hasOrigin = true;
+                        }
+                        long bitmapStyle = buffer.getKittyImageCellStyle(grid.imageId,
+                            sourceColumn, sourceRow);
+                        if (bitmapStyle != -1) line.setStyle(destinationColumn, bitmapStyle);
+                    }
+                }
+
+                previousForeground = foreground;
+                previousRow = sourceRow;
+                previousColumn = sourceColumn;
+                previousDestinationColumn = destinationColumn;
+                previousHigh = highByte;
+                previousHasHigh = exactHigh;
+                previousValid = sourceRow >= 0 && sourceColumn >= 0;
+            }
+        }
+    }
+
 
     /** Advance as for a width-one character without touching the cell. */
     private void advanceCursorOverKittyUnicodePlaceholder() {
@@ -4449,6 +4634,10 @@ public final class TerminalEmulator {
         mKittyUnicodePlaceholderGrids.clear();
         mKittyUnicodePlaceholderPendingGrid = null;
         mKittyUnicodePlaceholderPendingDiacritics = 0;
+        mKittyUnicodePlaceholderBitmapRow = -1;
+        mKittyUnicodePlaceholderBitmapColumn = -1;
+        mKittyUnicodePlaceholderBitmapHigh = -1;
+        mKittyUnicodePlaceholderPendingForegroundColor = 0;
         setCursorStyle();
         mArgIndex = 0;
         mContinueSequence = false;

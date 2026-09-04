@@ -39,6 +39,10 @@ public class KittyGraphicsTest extends TerminalTestCase {
     /** Raw `RGBA` (`f=32`) pixel data for a `1x1` and a `2x2` image, `base64` encoded. */
     private static final String RGBA_BASE64_1X1 = "AQIDBA==";
     private static final String RGBA_BASE64_2X2 = "AQIDBAUGBwgJCgsMDQ4PEA==";
+    /** The Kitty Unicode placeholder used by timg and tmux-compatible clients. */
+    private static final String KITTY_UNICODE_PLACEHOLDER =
+        new String(Character.toChars(0x10EEEE));
+
 
     /** Wrap an inner escape sequence in tmux's DCS passthrough framing. */
     private static String wrapInTmux(String inner) {
@@ -1104,6 +1108,165 @@ public class KittyGraphicsTest extends TerminalTestCase {
         // Ordinary tmux chrome is not placement content and must stay untouched.
         assertEquals(TextStyle.NORMAL, getStyleAt(3, 0));
         assertLinesAre("      ", "      ", "      ", "STATUS");
+    }
+
+    public void testTimgColonTruecolorThreeMarkClustersResolve() {
+        withTerminalSized(6, 3);
+        final long imageId = 0x01010203L;
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, /* placementId */ 1);
+
+        KittyImage kittyImage = new KittyImage(null);
+        StringBuilder args = new StringBuilder("GU=1,i=" + imageId + ",c=2,r=2");
+        assertEquals(args.length(), kittyImage.readControlData(args, 1));
+        mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {2, 2});
+
+        // This is a compact row fixture captured from timg: colon-separated truecolor, with the
+        // third combining mark carrying the image id's most significant byte.
+        enterString("\033[38:2:1:2:3m"
+            + KITTY_UNICODE_PLACEHOLDER + "\u0305\u0305\u030D"
+            + KITTY_UNICODE_PLACEHOLDER + "\u0305\u030D\u030D"
+            + "\033[39m\n\r\033[38:2:1:2:3m"
+            + KITTY_UNICODE_PLACEHOLDER + "\u030D\u0305\u030D"
+            + KITTY_UNICODE_PLACEHOLDER + "\u030D\u030D\u030D"
+            + "\033[39m");
+
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertEquals(0, TextStyle.getTerminalBitmapX(getStyleAt(0, 0)));
+        assertEquals(0, TextStyle.getTerminalBitmapY(getStyleAt(0, 0)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 1)));
+        assertEquals(1, TextStyle.getTerminalBitmapX(getStyleAt(0, 1)));
+        assertEquals(0, TextStyle.getTerminalBitmapY(getStyleAt(0, 1)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 0)));
+        assertEquals(0, TextStyle.getTerminalBitmapX(getStyleAt(1, 0)));
+        assertEquals(1, TextStyle.getTerminalBitmapY(getStyleAt(1, 0)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 1)));
+        assertEquals(1, TextStyle.getTerminalBitmapX(getStyleAt(1, 1)));
+        assertEquals(1, TextStyle.getTerminalBitmapY(getStyleAt(1, 1)));
+        assertLineStartsWith(0, 0x10EEEE, 0x0305, 0x0305, 0x030D,
+            0x10EEEE, 0x0305, 0x030D, 0x030D);
+    }
+
+    public void testPlaceholderTextBeforeVirtualMetadataResolvesWhenGridStarts() {
+        withTerminalSized(4, 2);
+        final long imageId = 0x01040506L;
+
+        // tmux can replay the text before the graphics APC that creates the virtual placement.
+        enterString("\033[38:2:4:5:6m"
+            + KITTY_UNICODE_PLACEHOLDER + "\u0305\u0305\u030D"
+            + "\033[39m");
+        assertFalse(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertLineStartsWith(0, 0x10EEEE, 0x0305, 0x0305, 0x030D);
+
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, /* placementId */ 1);
+        KittyImage kittyImage = new KittyImage(null);
+        StringBuilder args = new StringBuilder("GU=1,i=" + imageId + ",c=1,r=1");
+        assertEquals(args.length(), kittyImage.readControlData(args, 1));
+        mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {1, 1});
+
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertEquals(0, TextStyle.getTerminalBitmapX(getStyleAt(0, 0)));
+        assertEquals(0, TextStyle.getTerminalBitmapY(getStyleAt(0, 0)));
+        assertLineStartsWith(0, 0x10EEEE, 0x0305, 0x0305, 0x030D);
+    }
+
+    public void testResolvedPlaceholderKeepsItsBaseCharacter() {
+        withTerminalSized(3, 1);
+        final long imageId = 0x00010203L;
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, /* placementId */ 1);
+
+        KittyImage kittyImage = new KittyImage(null);
+        StringBuilder args = new StringBuilder("GU=1,i=" + imageId + ",c=1,r=1");
+        assertEquals(args.length(), kittyImage.readControlData(args, 1));
+        mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {1, 1});
+
+        enterString("\033[38;2;1;2;3m"
+            + KITTY_UNICODE_PLACEHOLDER + "\u0305\u0305\033[39m");
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertLineStartsWith(0, 0x10EEEE, 0x0305, 0x0305);
+    }
+
+    public void testAsciiUnderscoreIsNotAUnicodePlaceholder() {
+        withTerminalSized(3, 1);
+        final long imageId = 0x00010203L;
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, /* placementId */ 1);
+
+        KittyImage kittyImage = new KittyImage(null);
+        StringBuilder args = new StringBuilder("GU=1,i=" + imageId + ",c=1,r=1");
+        assertEquals(args.length(), kittyImage.readControlData(args, 1));
+        mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {1, 1});
+
+        enterString("\033[38;2;1;2;3m_\u0305\u0305\033[39m");
+        assertFalse(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertLineStartsWith(0, '_', 0x0305, 0x0305);
+        assertTrue(hasBitmap(0));
+    }
+
+    public void testVirtualPlaceholderPlacementSurvivesResizeAndTranscriptClear() {
+        withTerminalSized(4, 2);
+        final long imageId = 0x00010203L;
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, /* placementId */ 1);
+
+        KittyImage kittyImage = new KittyImage(null);
+        StringBuilder args = new StringBuilder("GU=1,i=" + imageId + ",c=1,r=1");
+        assertEquals(args.length(), kittyImage.readControlData(args, 1));
+        mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {1, 1});
+
+        String placeholder = "\033[38;2;1;2;3m"
+            + KITTY_UNICODE_PLACEHOLDER + "\u0305\u0305\033[39m";
+        enterString(placeholder);
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertTrue(hasBitmap(0));
+
+        resize(6, 3);
+        assertTrue(hasBitmap(0));
+        enterString("\033[1;1H" + placeholder);
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+
+        // Scroll content into the transcript before clearing it; the virtual prototype is not tied
+        // to either the screen coordinates or a particular transcript row.
+        enterString("\033[3;1H\r\n\r\n");
+        assertTrue(mTerminal.getScreen().getActiveTranscriptRows() > 0);
+        mTerminal.getScreen().clearTranscript();
+        assertTrue(hasBitmap(0));
+
+        enterString("\033[1;1H" + placeholder);
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+    }
+
+    public void testOmpSemicolonTruecolorTwoMarkClustersStillResolve() {
+        withTerminalSized(6, 3);
+        final long imageId = 0x00010203L;
+        // OMP's existing path supplies the image id as the placement id (`p=imageId`).
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, imageId);
+
+        KittyImage kittyImage = new KittyImage(null);
+        StringBuilder args = new StringBuilder(
+            "GU=1,i=" + imageId + ",p=" + imageId + ",c=2,r=2");
+        assertEquals(args.length(), kittyImage.readControlData(args, 1));
+        mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {2, 2});
+
+        enterString("\033[38;2;1;2;3m"
+            + KITTY_UNICODE_PLACEHOLDER + "\u0305\u0305"
+            + KITTY_UNICODE_PLACEHOLDER + "\u0305\u030D"
+            + "\033[39m\n\r\033[38;2;1;2;3m"
+            + KITTY_UNICODE_PLACEHOLDER + "\u030D\u0305"
+            + KITTY_UNICODE_PLACEHOLDER + "\u030D\u030D"
+            + "\033[39m");
+
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertEquals(0, TextStyle.getTerminalBitmapX(getStyleAt(0, 0)));
+        assertEquals(0, TextStyle.getTerminalBitmapY(getStyleAt(0, 0)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 1)));
+        assertEquals(1, TextStyle.getTerminalBitmapX(getStyleAt(0, 1)));
+        assertEquals(0, TextStyle.getTerminalBitmapY(getStyleAt(0, 1)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 0)));
+        assertEquals(0, TextStyle.getTerminalBitmapX(getStyleAt(1, 0)));
+        assertEquals(1, TextStyle.getTerminalBitmapY(getStyleAt(1, 0)));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(1, 1)));
+        assertEquals(1, TextStyle.getTerminalBitmapX(getStyleAt(1, 1)));
+        assertEquals(1, TextStyle.getTerminalBitmapY(getStyleAt(1, 1)));
+        assertLineStartsWith(0, 0x10EEEE, 0x0305, 0x0305,
+            0x10EEEE, 0x0305, 0x030D);
     }
 
     public void testUnknownKeysAreIgnored() {
