@@ -4285,13 +4285,6 @@ public final class TerminalEmulator {
         mKittyUnicodePlaceholderBitmapHigh = -1;
     }
 
-    /** Convert an internal circular-buffer row to its external transcript/screen coordinate. */
-    private static int kittyUnicodeExternalRow(TerminalBuffer buffer, int internalRow) {
-        int row = internalRow - buffer.mScreenFirstRow;
-        if (row < 0) row += buffer.mTotalRows;
-        if (row >= buffer.mTotalRows / 2) row -= buffer.mTotalRows;
-        return row;
-    }
 
     /**
      * Resolve U+10EEEE clusters that were stored as text before their APC metadata arrived.
@@ -4303,14 +4296,14 @@ public final class TerminalEmulator {
     }
 
     private void resolveStoredKittyUnicodePlaceholders(TerminalBuffer buffer) {
-        for (int internalRow = 0; internalRow < buffer.mLines.length; internalRow++) {
-            TerminalRow line = buffer.mLines[internalRow];
+        for (int destinationRow = -buffer.getActiveTranscriptRows();
+             destinationRow < buffer.mScreenRows; destinationRow++) {
+            TerminalRow line = buffer.mLines[buffer.externalToInternalRow(destinationRow)];
             if (line == null) continue;
 
             char[] text = line.mText;
             int textIndex = 0;
             int column = 0;
-            int destinationRow = kittyUnicodeExternalRow(buffer, internalRow);
 
             int previousForeground = -1;
             int previousRow = -1;
