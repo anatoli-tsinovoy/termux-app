@@ -994,14 +994,14 @@ public class KittyGraphicsTest extends TerminalTestCase {
 
         // An isolated bare placeholder before an explicit origin remains ordinary text.
         enterString(placeholder + "\033[1;2H");
-        assertEquals(TextStyle.NORMAL, getStyleAt(0, 0));
+        assertFalse(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
 
         // A complete (0, 0) source cell at an offset destination establishes the origin, but only
         // paints the destination cell.
         enterString("\033[1;3H" + placeholder + "\u0305\u0305");
         assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 2)));
-        assertEquals(TextStyle.NORMAL, getStyleAt(0, 0));
-        assertEquals(TextStyle.NORMAL, getStyleAt(0, 1));
+        assertFalse(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertFalse(TextStyle.isTerminalBitmap(getStyleAt(0, 1)));
         assertEquals(TextStyle.NORMAL, getStyleAt(0, 3));
         assertEquals(TextStyle.NORMAL, getStyleAt(1, 0));
         assertEquals(TextStyle.NORMAL, getStyleAt(1, 1));
@@ -1061,7 +1061,12 @@ public class KittyGraphicsTest extends TerminalTestCase {
             + placeholder + "\u030D\u0305\u0305"
             + "\033[4;1H");
 
-        assertLinesAre("      xy", "      uv", "keep    ", "STATUS  ");
+        assertLineStartsWith(0, 0x10EEEE, 0x0305, 0x0305, 0x0305);
+        assertLineStartsWith(1, 0x10EEEE, 0x030D, 0x0305, 0x0305);
+        assertEquals("xy", mTerminal.getSelectedText(6, 0, 7, 0));
+        assertEquals("uv", mTerminal.getSelectedText(6, 1, 7, 1));
+        assertEquals("keep", mTerminal.getSelectedText(0, 2, 3, 2));
+        assertEquals("STATUS", mTerminal.getSelectedText(0, 3, 5, 3));
 
         long style = getStyleAt(0, 0);
         assertTrue(TextStyle.isTerminalBitmap(style));
@@ -1787,6 +1792,9 @@ public class KittyGraphicsTest extends TerminalTestCase {
         mTerminal.getScreen().clearTranscript();
 
         enterString("\033_Ga=d,d=A,q=2\033\\");
+        assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(imageId));
+
+        enterString("\033_Ga=d,d=I,i=" + imageId + ",p=1,q=2\033\\");
         assertEquals(-1, mTerminal.getKittyImageDataLength(imageId));
     }
 
