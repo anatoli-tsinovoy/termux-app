@@ -123,12 +123,27 @@ public class KittyGraphicsTest extends TerminalTestCase {
             "\033_Gi=31;OK\033\\");
     }
 
+    public void testNestedTmuxPassthroughWrappedDirectQuery() {
+        withTerminalSized(10, 5);
+        assertEnteringStringGivesResponse(
+            wrapInTmux(wrapInTmux("\033_Gi=32,s=1,v=1,a=q,t=d,f=24;AAAA\033\\")),
+            "\033_Gi=32;OK\033\\");
+    }
+
     public void testTmuxPassthroughWrappedSingleTransmit() {
         withTerminalSized(10, 5);
         assertEnteringStringGivesResponse(
             wrapInTmux("\033_Ga=t,f=100,t=d,i=424,m=0,q=2;" + PNG_BASE64 + "\033\\"),
             "");
         assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(424));
+    }
+
+    public void testNestedTmuxPassthroughWrappedSingleTransmit() {
+        withTerminalSized(10, 5);
+        assertEnteringStringGivesResponse(
+            wrapInTmux(wrapInTmux("\033_Ga=t,f=100,t=d,i=428,m=0,q=2;" + PNG_BASE64 + "\033\\")),
+            "");
+        assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(428));
     }
 
     public void testTmuxPassthroughWrappedChunkedTransmit() {
@@ -140,6 +155,17 @@ public class KittyGraphicsTest extends TerminalTestCase {
             wrapInTmux("\033_Gm=0,q=2;" + PNG_BASE64_CHUNK_1 + "\033\\"),
             "");
         assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(425));
+    }
+
+    public void testNestedTmuxPassthroughWrappedChunkedTransmit() {
+        withTerminalSized(10, 5);
+        assertEnteringStringGivesResponse(
+            wrapInTmux(wrapInTmux("\033_Ga=t,f=100,t=d,i=429,m=1,q=2;" + PNG_BASE64_CHUNK_0 + "\033\\")),
+            "");
+        assertEnteringStringGivesResponse(
+            wrapInTmux(wrapInTmux("\033_Gm=0,q=2;" + PNG_BASE64_CHUNK_1 + "\033\\")),
+            "");
+        assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(429));
     }
 
     public void testTmuxPassthroughStreamsLargePayload() {
@@ -1053,6 +1079,33 @@ public class KittyGraphicsTest extends TerminalTestCase {
         assertEquals(TextStyle.NORMAL, getStyleAt(3, 0));
     }
 
+    public void testReplacingVirtualPlacementPreservesExistingPlaceholderCells() {
+        withTerminalSized(6, 4);
+        TerminalBuffer screen = mTerminal.getScreen();
+        final int imageId = 0x206681;
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, /* placementId */ 7);
+        screen.setChar(0, 0, ' ', TextStyle.encodeTerminalBitmap(0, 0, 0));
+        screen.setChar(1, 1, ' ', TextStyle.encodeTerminalBitmap(0, 1, 1));
+        enterString("\033[4;1HSTATUS");
+
+        TerminalBitmap replacement = new TerminalBitmap(null, /* bitmapNum */ 1, /* bitmap */ null,
+            INITIAL_CELL_WIDTH_PIXELS, INITIAL_CELL_HEIGHT_PIXELS, /* scrollLines */ 1,
+            new int[] {1, 1});
+        replacement.setKittyImage(imageId, 7);
+        replacement.setKittyUnicodePlaceholder(true);
+
+        assertTrue(screen.replaceKittyUnicodePlaceholderPlacement(replacement));
+        assertTrue(hasBitmap(0));
+        assertFalse(hasBitmap(1));
+        assertTrue(TextStyle.isTerminalBitmap(getStyleAt(0, 0)));
+        assertEquals(0, TextStyle.getTerminalBitmapNum(getStyleAt(0, 0)));
+        // The resized virtual placement no longer has source cell (1, 1).
+        assertEquals(TextStyle.NORMAL, getStyleAt(1, 1));
+        // Ordinary tmux chrome is not placement content and must stay untouched.
+        assertEquals(TextStyle.NORMAL, getStyleAt(3, 0));
+        assertLinesAre("      ", "      ", "      ", "STATUS");
+    }
+
     public void testUnknownKeysAreIgnored() {
         withTerminalSized(20, 4);
 
@@ -1384,6 +1437,10 @@ public class KittyGraphicsTest extends TerminalTestCase {
         screen.doTerminalBitmapsGC(0);
         assertTrue(hasBitmap(0));
 
+        // `d=a`/`d=A` delete visible placements, not virtual U=1 prototypes or placeholder text.
+        screen.deleteAllKittyImagePlacements();
+        assertTrue(hasBitmap(0));
+
         screen.deleteKittyImagePlacements(imageId, 1);
         assertFalse(hasBitmap(0));
     }
@@ -1459,6 +1516,27 @@ public class KittyGraphicsTest extends TerminalTestCase {
         assertTrue(hasBitmap(0));
     }
 
+    public void testScrollingOneBitmapRowKeepsTheRemainingRowsRenderable() {
+        TerminalBuffer screen = new TerminalBuffer(/* columns */ 6, /* totalRows */ 4, /* screenRows */ 2);
+        TerminalBitmap bitmap = new TerminalBitmap(null, /* bitmapNum */ 0, /* bitmap */ null,
+            INITIAL_CELL_WIDTH_PIXELS, INITIAL_CELL_HEIGHT_PIXELS, /* scrollLines */ 2,
+            new int[] {2, 1});
+        bitmap.setKittyImage(/* imageId */ 1, /* placementId */ 1);
+        screen.addTerminalBitmap(bitmap);
+        screen.setChar(0, 0, '+', TextStyle.encodeTerminalBitmap(0, 0, 0));
+        screen.setChar(0, 1, '+', TextStyle.encodeTerminalBitmap(0, 0, 1));
+
+        // Fill the two-row transcript, then overwrite only the first bitmap row in the ring.
+        screen.scrollDownOneLine(0, 2, TextStyle.NORMAL);
+        screen.scrollDownOneLine(0, 2, TextStyle.NORMAL);
+        screen.scrollDownOneLine(0, 2, TextStyle.NORMAL);
+        assertTrue(hasBitmap(screen, 0));
+
+        // Once the final referenced row is overwritten, the bitmap can be released.
+        screen.scrollDownOneLine(0, 2, TextStyle.NORMAL);
+        assertFalse(hasBitmap(screen, 0));
+    }
+
     public void testDeleteAllKittyImagePlacementsDeletesPlacementsWithoutAnImageId() {
         // A placement created by a command that did not pass the `i` key can only be deleted with a
         // `d=a` or `d=A` delete, so it must not be treated as a placement of a non kitty image.
@@ -1511,6 +1589,26 @@ public class KittyGraphicsTest extends TerminalTestCase {
         assertEnteringStringGivesResponse("\033_Ga=d,d=A,i=19\033\\", "\033_Gi=19;OK\033\\");
         assertEquals(-1, mTerminal.getKittyImageDataLength(19));
         assertEquals(-1, mTerminal.getKittyImageDataLength(20));
+    }
+
+    public void testDeleteAllKeepsDataReferencedByVirtualPlacement() {
+        withTerminalSized(20, 4);
+        final int imageId = 0x010203;
+        enterString("\033_Ga=t,f=100,t=d,i=" + imageId + ",m=0,q=2;" + PNG_BASE64 + "\033\\");
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, /* placementId */ 1);
+
+        KittyImage kittyImage = new KittyImage(null);
+        StringBuilder args = new StringBuilder("GU=1,i=" + imageId + ",p=1,c=1,r=1");
+        assertEquals(args.length(), kittyImage.readControlData(args, 1));
+        mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {1, 1});
+
+        enterString("\033_Ga=d,d=A,q=2\033\\");
+        assertEquals(PNG_LENGTH, mTerminal.getKittyImageDataLength(imageId));
+        assertTrue(hasBitmap(0));
+
+        enterString("\033_Ga=d,d=I,i=" + imageId + ",p=1,q=2\033\\");
+        assertEquals(-1, mTerminal.getKittyImageDataLength(imageId));
+        assertFalse(hasBitmap(0));
     }
 
     public void testDeleteOfUnknownImageIdRespondsOk() {

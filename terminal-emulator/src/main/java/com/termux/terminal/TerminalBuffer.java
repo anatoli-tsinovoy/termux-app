@@ -462,16 +462,23 @@ public final class TerminalBuffer {
         // Note that the history has grown if not already full:
         if (mActiveTranscriptRows < mTotalRows - mScreenRows) mActiveTranscriptRows++;
 
-        // Blank the newly revealed line above the bottom margin:
+        // Blank the newly revealed line above the bottom margin.
         int blankRow = externalToInternalRow(bottomMargin - 1);
         if (mLines[blankRow] == null) {
             mLines[blankRow] = new TerminalRow(mColumns, style);
         } else {
-            // Remove bitmaps that are completely scrolled out.
-            if(mLines[blankRow].mHasTerminalBitmap) {
-                removeScrolledOutTerminalBitmaps(blankRow);
+            Set<Integer> overwrittenBitmapNums = null;
+            if (mLines[blankRow].mHasTerminalBitmap) {
+                overwrittenBitmapNums = new HashSet<>();
+                for (int column = 0; column < mColumns; column++) {
+                    int bitmapNum = TextStyle.getTerminalBitmapNum(mLines[blankRow].getStyle(column));
+                    if (bitmapNum >= TERMINAL_BITMAP__NUM_START) {
+                        overwrittenBitmapNums.add(bitmapNum);
+                    }
+                }
             }
             mLines[blankRow].clear(style);
+            releaseUnreferencedTerminalBitmaps(overwrittenBitmapNums);
         }
     }
 
@@ -801,6 +808,62 @@ public final class TerminalBuffer {
         mTerminalBitmaps.put(terminalBitmap.getBitmapNum(), terminalBitmap);
     }
 
+    /**
+     * Replace a virtual Kitty placement without deleting the real images represented by Unicode
+     * placeholder cells. Those cells are ordinary terminal content and may be repainted only
+     * partially by a multiplexer, so their bitmap number must remain stable across replacement.
+     */
+    synchronized boolean replaceKittyUnicodePlaceholderPlacement(TerminalBitmap replacement) {
+        if (!replacement.usesKittyUnicodePlaceholders() ||
+            replacement.getKittyImageId() == KittyImage.IMAGE_ID__NONE ||
+            replacement.getKittyPlacementId() == KittyImage.PLACEMENT_ID__NONE) {
+            return false;
+        }
+
+        for (Map.Entry<Integer, TerminalBitmap> entry : mTerminalBitmaps.entrySet()) {
+            TerminalBitmap current = entry.getValue();
+            if (!current.usesKittyUnicodePlaceholders() ||
+                current.getKittyImageId() != replacement.getKittyImageId() ||
+                current.getKittyPlacementId() != replacement.getKittyPlacementId()) {
+                continue;
+            }
+
+            current.mBitmap = replacement.mBitmap;
+            current.mCellWidth = replacement.mCellWidth;
+            current.mCellHeight = replacement.mCellHeight;
+            current.mScrollLines = replacement.mScrollLines;
+            current.mCursorDelta = replacement.mCursorDelta;
+            clearTerminalBitmapCellsOutside(current);
+            return true;
+        }
+        return false;
+    }
+
+    /** Clear placeholder cells whose source coordinate is outside a resized virtual placement. */
+    private void clearTerminalBitmapCellsOutside(TerminalBitmap bitmap) {
+        if (bitmap.mCursorDelta == null || bitmap.mCursorDelta.length < 2) return;
+
+        int rows = bitmap.mCursorDelta[0];
+        int columns = bitmap.mCursorDelta[1];
+        for (TerminalRow line : mLines) {
+            if (line == null || !line.mHasTerminalBitmap) continue;
+
+            boolean hasTerminalBitmap = false;
+            for (int column = 0; column < mColumns; column++) {
+                long style = line.getStyle(column);
+                int bitmapNum = TextStyle.getTerminalBitmapNum(style);
+                if (bitmapNum == bitmap.getBitmapNum() &&
+                    (TextStyle.getTerminalBitmapX(style) >= columns ||
+                        TextStyle.getTerminalBitmapY(style) >= rows)) {
+                    line.setChar(column, ' ', TextStyle.NORMAL);
+                } else if (bitmapNum >= TERMINAL_BITMAP__NUM_START) {
+                    hasTerminalBitmap = true;
+                }
+            }
+            line.mHasTerminalBitmap = hasTerminalBitmap;
+        }
+    }
+
 
     /**
      * Delete the placements of a kitty graphics image and remove the {@link TerminalBitmap} that
@@ -829,6 +892,7 @@ public final class TerminalBuffer {
         for (Map.Entry<Integer, TerminalBitmap> terminalBitmap : mTerminalBitmaps.entrySet()) {
             TerminalBitmap bitmap = terminalBitmap.getValue();
             if (!bitmap.isKittyImage()) continue;
+            if (allImages && bitmap.usesKittyUnicodePlaceholders()) continue;
             if (!allImages &&
                 (bitmap.getKittyImageId() != kittyImageId ||
                     (kittyPlacementId != KittyImage.PLACEMENT_ID__NONE &&
@@ -867,38 +931,6 @@ public final class TerminalBuffer {
     }
 
 
-    /** Remove bitmaps that are completely scrolled out. */
-    public synchronized void removeScrolledOutTerminalBitmaps(int row) {
-        Set<Integer> bitmapsToRemove = new HashSet<>();
-
-        for (int column = 0; column < mColumns; column++) {
-            long columnStyle = mLines[row].getStyle(column);
-            int bitmapNum = TextStyle.getTerminalBitmapNum(columnStyle);
-            if (bitmapNum >= TERMINAL_BITMAP__NUM_START) {
-                bitmapsToRemove.add(bitmapNum);
-            }
-        }
-
-        if (row + 1 < mTotalRows) {
-            TerminalRow nextLine = mLines[row + 1];
-            if (nextLine.mHasTerminalBitmap) {
-                for (int column = 0; column < mColumns; column++) {
-                    long columnStyle = nextLine.getStyle(column);
-                    int bitmapNum = TextStyle.getTerminalBitmapNum(columnStyle);
-                    if (bitmapNum >= TERMINAL_BITMAP__NUM_START) {
-                        bitmapsToRemove.add(bitmapNum);
-                    }
-                }
-            }
-        }
-
-        for(Integer bitmapNum : bitmapsToRemove) {
-            TerminalBitmap bitmap = mTerminalBitmaps.get(bitmapNum);
-            if (bitmap == null || !bitmap.usesKittyUnicodePlaceholders()) {
-                mTerminalBitmaps.remove(bitmapNum);
-            }
-        }
-    }
 
     /**
      * Remove the {@link TerminalBitmap} for the bitmap numbers that are no longer referenced by any

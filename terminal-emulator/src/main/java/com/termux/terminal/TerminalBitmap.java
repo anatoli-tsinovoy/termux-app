@@ -147,9 +147,8 @@ public class TerminalBitmap {
      *
      * The association is stored in the {@link TerminalBitmap} itself instead of a separate registry
      * so that it does not need to be kept in sync when bitmaps are removed by
-     * {@link TerminalBuffer#doTerminalBitmapsGC(int)} and
-     * {@link TerminalBuffer#removeScrolledOutTerminalBitmaps(int)}, since bitmap numbers are reused
-     * for new bitmaps.
+     * {@link TerminalBuffer#doTerminalBitmapsGC(int)}, since bitmap numbers are reused for new
+     * bitmaps.
      */
     protected boolean mIsKittyImage;
 
@@ -491,7 +490,7 @@ public class TerminalBitmap {
                     cellWidth, cellHeight);
             }
             TerminalBitmap terminalBitmap = buildOrThrow(terminalBuffer, bitmapNum, newBitmap, x, y,
-                cellWidth, cellHeight, placeOnScreen);
+                cellWidth, cellHeight, placeOnScreen, false);
             if (terminalBitmap == null) {
                 return terminalBitmap;
             }
@@ -751,7 +750,8 @@ public class TerminalBitmap {
     public static TerminalBitmap build(TerminalBuffer terminalBuffer, int bitmapNum, Bitmap bitmap,
                                        int x, int y, int cellWidth, int cellHeight) {
         try {
-            return buildOrThrow(terminalBuffer, bitmapNum, bitmap, x, y, cellWidth, cellHeight, true);
+            return buildOrThrow(terminalBuffer, bitmapNum, bitmap, x, y, cellWidth, cellHeight,
+                true, true);
         } catch (Throwable t) {
             if (t instanceof OutOfMemoryError) System.gc();
             Logger.logError(terminalBuffer.getClient(), LOG_TAG,
@@ -763,13 +763,14 @@ public class TerminalBitmap {
     /** Build a {@link TerminalBitmap} from a {@link Bitmap}. */
     public static TerminalBitmap buildOrThrow(TerminalBuffer terminalBuffer, int bitmapNum, Bitmap bitmap,
                                               int x, int y, int cellWidth, int cellHeight) throws Throwable {
-        return buildOrThrow(terminalBuffer, bitmapNum, bitmap, x, y, cellWidth, cellHeight, true);
+        return buildOrThrow(terminalBuffer, bitmapNum, bitmap, x, y, cellWidth, cellHeight,
+            true, true);
     }
 
     /** Build a {@link TerminalBitmap} from a {@link Bitmap}. */
     private static TerminalBitmap buildOrThrow(TerminalBuffer terminalBuffer, int bitmapNum, Bitmap bitmap,
                                               int x, int y, int cellWidth, int cellHeight,
-                                              boolean placeOnScreen) throws Throwable {
+                                              boolean placeOnScreen, boolean scrollToFit) throws Throwable {
         if (bitmap == null) {
             throw new IllegalArgumentException("Cannot create terminal bitmap from an unset bitmap");
         }
@@ -794,10 +795,11 @@ public class TerminalBitmap {
 
         for (int i = 0; i < height; i++) {
             if (y + i - s == terminalBuffer.mScreenRows) {
+                if (!scrollToFit) break;
                 terminalBuffer.scrollDownOneLine(0, terminalBuffer.mScreenRows, TextStyle.NORMAL);
                 s++;
             }
-            for (int j = 0; j < width ; j++) {
+            for (int j = 0; j < width; j++) {
                 int row = y + i - s;
 
                 int overwrittenBitmapNum = TextStyle.getTerminalBitmapNum(terminalBuffer.getStyleAt(row, x + j));
