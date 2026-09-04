@@ -1002,6 +1002,57 @@ public class KittyGraphicsTest extends TerminalTestCase {
         assertEquals(TextStyle.NORMAL, getStyleAt(2, 0));
     }
 
+    public void testTmuxUnicodePlaceholderRepaintMapsOnlyIntendedCells() {
+        withTerminalSized(8, 4);
+        enterString("\033[1;7Hxy\033[2;7Huv\033[3;1Hkeep\033[4;1HSTATUS");
+
+        final int imageId = 0x206681;
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, /* placementId */ 1);
+
+        KittyImage kittyImage = new KittyImage(null);
+        StringBuilder args = new StringBuilder("GU=1,i=" + imageId + ",c=3,r=2");
+        assertEquals(args.length(), kittyImage.readControlData(args, 1));
+        mTerminal.startKittyUnicodePlaceholderGrid(kittyImage, new int[] {2, 3});
+
+        String placeholder = new String(Character.toChars(0x10EEEE));
+        enterString("\033[H\033[38;2;32;102;129m"
+            // tmux progressively redraws a cell, flushing partial clusters with cursor-home.
+            + placeholder + "\033[H"
+            + placeholder + "\u0305\033[H"
+            + placeholder + "\u0305\u0305\033[H"
+            // A complete row/column/id cluster addresses the first source cell.
+            + placeholder + "\u0305\u0305\u0305"
+            + "\033[2;1H"
+            // The same progressive redraw pattern can flush partial clusters with backspace.
+            + placeholder + "\b"
+            + placeholder + "\u030D\b"
+            + placeholder + "\u030D\u0305\b"
+            // A complete row/column/id cluster addresses the second source row.
+            + placeholder + "\u030D\u0305\u0305"
+            + "\033[4;1H");
+
+        assertLinesAre("      xy", "      uv", "keep    ", "STATUS  ");
+
+        long style = getStyleAt(0, 0);
+        assertTrue(TextStyle.isTerminalBitmap(style));
+        assertEquals(0, TextStyle.getTerminalBitmapX(style));
+        assertEquals(0, TextStyle.getTerminalBitmapY(style));
+
+        style = getStyleAt(1, 0);
+        assertTrue(TextStyle.isTerminalBitmap(style));
+        assertEquals(0, TextStyle.getTerminalBitmapX(style));
+        assertEquals(1, TextStyle.getTerminalBitmapY(style));
+
+        // Only the addressed cells are bitmap cells; text outside the destination grid is
+        // untouched, including the status row.
+        assertEquals(TextStyle.NORMAL, getStyleAt(0, 1));
+        assertEquals(TextStyle.NORMAL, getStyleAt(0, 2));
+        assertEquals(TextStyle.NORMAL, getStyleAt(1, 1));
+        assertEquals(TextStyle.NORMAL, getStyleAt(1, 2));
+        assertEquals(TextStyle.NORMAL, getStyleAt(2, 0));
+        assertEquals(TextStyle.NORMAL, getStyleAt(3, 0));
+    }
+
     public void testUnknownKeysAreIgnored() {
         withTerminalSized(20, 4);
 
@@ -1201,6 +1252,17 @@ public class KittyGraphicsTest extends TerminalTestCase {
         }
     }
 
+    /** Add a virtual U=1 kitty placement without painting provisional cells. */
+    private void addUnplacedKittyPlacement(int bitmapNum, long imageId, long placementId) {
+        TerminalBitmap terminalBitmap = new TerminalBitmap(null, bitmapNum, /* bitmap */ null,
+            INITIAL_CELL_WIDTH_PIXELS, INITIAL_CELL_HEIGHT_PIXELS, /* scrollLines */ 1,
+            new int[] {1, 1});
+        terminalBitmap.setKittyImage(imageId, placementId);
+        terminalBitmap.setKittyUnicodePlaceholder(true);
+        mTerminal.getScreen().addTerminalBitmap(terminalBitmap);
+    }
+
+
     /** Whether a {@link TerminalBitmap} is still loaded for a bitmap number. */
     private boolean hasBitmap(int bitmapNum) {
         return hasBitmap(mTerminal.getScreen(), bitmapNum);
@@ -1307,6 +1369,41 @@ public class KittyGraphicsTest extends TerminalTestCase {
         placeCursorAndAssert(8, 10);
         mTerminal.moveCursorAfterTerminalBitmap(new int[] {3, 4});
         assertCursorAt(10, 14);
+    }
+
+    public void testVirtualKittyUnicodePlaceholderBitmapSurvivesGarbageCollectionUntilDeleted() {
+        withTerminalSized(6, 2);
+        TerminalBuffer screen = mTerminal.getScreen();
+        final long imageId = 0x010203;
+
+        addUnplacedKittyPlacement(/* bitmapNum */ 0, imageId, /* placementId */ 1);
+        assertLinesAre("      ", "      ");
+        assertTrue(screen.getTerminalBitmap(TextStyle.encodeTerminalBitmap(0, 0, 0))
+            .usesKittyUnicodePlaceholders());
+
+        screen.doTerminalBitmapsGC(0);
+        assertTrue(hasBitmap(0));
+
+        screen.deleteKittyImagePlacements(imageId, 1);
+        assertFalse(hasBitmap(0));
+    }
+
+    public void testDirectUnreferencedKittyBitmapIsReleasedByGarbageCollection() {
+        withTerminalSized(6, 3);
+        TerminalBuffer screen = mTerminal.getScreen();
+
+        addPlacement(/* bitmapNum */ 0, /* isKittyImage */ true, /* imageId */ 1,
+            /* placementId */ 1, /* row */ 0, /* column */ 0, /* columns */ 2);
+        addPlacement(1, true, 2, 1, 1, 0, 2);
+        assertFalse(screen.getTerminalBitmap(TextStyle.encodeTerminalBitmap(0, 0, 0))
+            .usesKittyUnicodePlaceholders());
+
+        screen.setChar(0, 0, 'a', TextStyle.NORMAL);
+        screen.setChar(1, 0, 'b', TextStyle.NORMAL);
+        screen.doTerminalBitmapsGC(0);
+
+        assertFalse(hasBitmap(0));
+        assertTrue(hasBitmap(1));
     }
 
     public void testUnreferencedTerminalBitmapsAreReleasedWhenTheirCellsAreOverwritten() {

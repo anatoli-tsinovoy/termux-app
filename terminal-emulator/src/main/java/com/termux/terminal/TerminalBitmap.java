@@ -153,6 +153,9 @@ public class TerminalBitmap {
      */
     protected boolean mIsKittyImage;
 
+    /** Whether this kitty image placement is addressed by Unicode placeholder cells. */
+    protected boolean mUsesKittyUnicodePlaceholders;
+
     /** The kitty graphics image id this bitmap is a placement of, if {@link #mIsKittyImage}. */
     protected long mKittyImageId = KittyImage.IMAGE_ID__NONE;
 
@@ -394,6 +397,20 @@ public class TerminalBitmap {
                                                     int sourceWidth, int sourceHeight,
                                                     int x, int y, int cellWidth, int cellHeight,
                                                     int width, int height, boolean shouldPreserveAspectRatio) {
+        return buildForKittyImage(terminalBuffer, bitmapNum, format, image,
+            pixelWidth, pixelHeight, sourceX, sourceY, sourceWidth, sourceHeight,
+            x, y, cellWidth, cellHeight, width, height, shouldPreserveAspectRatio, true);
+    }
+
+    /** Build a Kitty bitmap while explicitly choosing whether to install its cells on screen. */
+    static TerminalBitmap buildForKittyImage(TerminalBuffer terminalBuffer, int bitmapNum,
+                                             int format, byte[] image,
+                                             int pixelWidth, int pixelHeight,
+                                             int sourceX, int sourceY,
+                                             int sourceWidth, int sourceHeight,
+                                             int x, int y, int cellWidth, int cellHeight,
+                                             int width, int height, boolean shouldPreserveAspectRatio,
+                                             boolean placeOnScreen) {
         try {
             if (image == null) {
                 Logger.logError(terminalBuffer.getClient(), LOG_TAG,
@@ -465,10 +482,16 @@ public class TerminalBitmap {
                 }
             }
 
-            newBitmap = resizeBitmapConstrained(LOG_TAG, "kitty image", terminalBuffer.getClient(), newBitmap,
-                newBitmap.getWidth(), newBitmap.getHeight(), cellWidth, cellHeight,
-                terminalBuffer.mColumns - x);
-            TerminalBitmap terminalBitmap = build(terminalBuffer, bitmapNum, newBitmap, x, y, cellWidth, cellHeight);
+            if (placeOnScreen) {
+                newBitmap = resizeBitmapConstrained(LOG_TAG, "kitty image", terminalBuffer.getClient(), newBitmap,
+                    newBitmap.getWidth(), newBitmap.getHeight(), cellWidth, cellHeight,
+                    terminalBuffer.mColumns - x);
+            } else {
+                newBitmap = resizeBitmapCellAligned(LOG_TAG, "kitty image", terminalBuffer.getClient(), newBitmap,
+                    cellWidth, cellHeight);
+            }
+            TerminalBitmap terminalBitmap = buildOrThrow(terminalBuffer, bitmapNum, newBitmap, x, y,
+                cellWidth, cellHeight, placeOnScreen);
             if (terminalBitmap == null) {
                 return terminalBitmap;
             }
@@ -491,7 +514,7 @@ public class TerminalBitmap {
      *
      * @param canSubsample Whether the image may be subsampled while decoding it to save memory,
      *                     which requires the entire image to be displayed, check
-     *                     {@link #buildForKittyImage(TerminalBuffer, int, int, byte[], int, int, int, int, int, int, int, int, int, int, int, int, boolean)}
+     *                     {@link #buildForKittyImage(TerminalBuffer, int, int, byte[], int, int, int, int, int, int, int, int, int, boolean, boolean)}
      *                     for more info.
      * @param width The width in pixels the image is to be displayed in, or a value `< 1` if it is to
      *              be displayed at its own size, in which case it cannot be subsampled.
@@ -728,7 +751,7 @@ public class TerminalBitmap {
     public static TerminalBitmap build(TerminalBuffer terminalBuffer, int bitmapNum, Bitmap bitmap,
                                        int x, int y, int cellWidth, int cellHeight) {
         try {
-            return buildOrThrow(terminalBuffer, bitmapNum, bitmap, x, y, cellWidth, cellHeight);
+            return buildOrThrow(terminalBuffer, bitmapNum, bitmap, x, y, cellWidth, cellHeight, true);
         } catch (Throwable t) {
             if (t instanceof OutOfMemoryError) System.gc();
             Logger.logError(terminalBuffer.getClient(), LOG_TAG,
@@ -740,12 +763,26 @@ public class TerminalBitmap {
     /** Build a {@link TerminalBitmap} from a {@link Bitmap}. */
     public static TerminalBitmap buildOrThrow(TerminalBuffer terminalBuffer, int bitmapNum, Bitmap bitmap,
                                               int x, int y, int cellWidth, int cellHeight) throws Throwable {
+        return buildOrThrow(terminalBuffer, bitmapNum, bitmap, x, y, cellWidth, cellHeight, true);
+    }
+
+    /** Build a {@link TerminalBitmap} from a {@link Bitmap}. */
+    private static TerminalBitmap buildOrThrow(TerminalBuffer terminalBuffer, int bitmapNum, Bitmap bitmap,
+                                              int x, int y, int cellWidth, int cellHeight,
+                                              boolean placeOnScreen) throws Throwable {
         if (bitmap == null) {
             throw new IllegalArgumentException("Cannot create terminal bitmap from an unset bitmap");
         }
 
         int bitmapWidth = bitmap.getWidth();
         int bitmapHeight = bitmap.getHeight();
+        if (!placeOnScreen) {
+            int width = (bitmapWidth - 1) / cellWidth + 1;
+            int height = (bitmapHeight - 1) / cellHeight + 1;
+            return new TerminalBitmap(terminalBuffer.getClient(), bitmapNum, bitmap,
+                cellWidth, cellHeight, height, null);
+        }
+
         int width = Math.min(terminalBuffer.mColumns - x, (bitmapWidth + cellWidth - 1) / cellWidth);
         int height = (bitmapHeight + cellHeight - 1) / cellHeight;
         int s = 0;
@@ -783,6 +820,19 @@ public class TerminalBitmap {
 
         return new TerminalBitmap(terminalBuffer.getClient(), bitmapNum, bitmap,
             cellWidth, cellHeight, scrollLines, null);
+    }
+
+    private static Bitmap resizeBitmapCellAligned(String logTag, String label, TerminalSessionClient client,
+                                                  Bitmap bitmap, int cellWidth, int cellHeight) {
+        int bitmapWidth = bitmap.getWidth();
+        int bitmapHeight = bitmap.getHeight();
+        if (bitmapWidth % cellWidth == 0 && bitmapHeight % cellHeight == 0) {
+            return bitmap;
+        }
+
+        int newBitmapWidth = ((bitmapWidth - 1) / cellWidth) * cellWidth + cellWidth;
+        int newBitmapHeight = ((bitmapHeight - 1) / cellHeight) * cellHeight + cellHeight;
+        return resizeBitmap(logTag, label, client, bitmap, newBitmapWidth, newBitmapHeight);
     }
 
 
@@ -841,6 +891,16 @@ public class TerminalBitmap {
         mIsKittyImage = true;
         mKittyImageId = kittyImageId;
         mKittyPlacementId = kittyPlacementId;
+    }
+
+    /** Whether this bitmap is retained for later Kitty Unicode placeholder cells. */
+    boolean usesKittyUnicodePlaceholders() {
+        return mUsesKittyUnicodePlaceholders;
+    }
+
+    /** Mark this bitmap as a Kitty Unicode placeholder placement. */
+    void setKittyUnicodePlaceholder(boolean usesKittyUnicodePlaceholders) {
+        mUsesKittyUnicodePlaceholders = usesKittyUnicodePlaceholders;
     }
 
 

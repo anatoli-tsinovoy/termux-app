@@ -426,7 +426,7 @@ public class KittyImage {
      * passed the `s` and `v` keys when transmitting it, which is always required for the raw formats
      * but is optional for `PNG`, so the source rectangle is validated against the actual dimensions
      * of the bitmap again by
-     * {@link TerminalBitmap#buildForKittyImage(TerminalBuffer, int, int, byte[], int, int, int, int, int, int, int, int, int, int, int, int, boolean)}.
+     * {@link TerminalBitmap#buildForKittyImage(TerminalBuffer, int, int, byte[], int, int, int, int, int, int, int, int, int, int, int, int, boolean, boolean)}.
      *
      * @param imageWidth The width in pixels of the image, or a value `< 1` if it is not known.
      * @param imageHeight The height in pixels of the image, or a value `< 1` if it is not known.

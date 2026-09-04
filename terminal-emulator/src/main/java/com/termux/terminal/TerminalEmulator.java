@@ -3236,7 +3236,7 @@ public final class TerminalEmulator {
             kittyImage.getSourceWidth(), kittyImage.getSourceHeight(),
             mCursorCol, mCursorRow, mCellWidthPixels, mCellHeightPixels,
             kittyImage.getWidthPixels(mCellWidthPixels), kittyImage.getHeightPixels(mCellHeightPixels),
-            kittyImage.shouldPreserveAspectRatio(),
+            kittyImage.shouldPreserveAspectRatio(), !kittyImage.usesUnicodePlaceholders(),
             kittyImage.getImageId(), kittyImage.getPlacementId());
 
         // A null bitmap means the image could not be created. The builder does not add it to the
@@ -3264,7 +3264,6 @@ public final class TerminalEmulator {
         mScreen.addTerminalBitmap(terminalBitmap);
         mScreen.doTerminalBitmapsGC(30000);
         if (kittyImage.usesUnicodePlaceholders()) {
-            mScreen.clearTerminalBitmapCells(terminalBitmap.mBitmapNum);
             startKittyUnicodePlaceholderGrid(kittyImage, cursorDelta);
         }
 

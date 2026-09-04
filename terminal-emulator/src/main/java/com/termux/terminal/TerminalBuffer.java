@@ -590,23 +590,6 @@ public final class TerminalBuffer {
         return -1;
     }
 
-    /** Clear a placement's provisional cells without freeing the bitmap used by U=1 placeholders. */
-    synchronized void clearTerminalBitmapCells(int bitmapNum) {
-        for (TerminalRow line : mLines) {
-            if (line == null || !line.mHasTerminalBitmap) continue;
-
-            boolean hasTerminalBitmap = false;
-            for (int column = 0; column < mColumns; column++) {
-                int cellBitmapNum = TextStyle.getTerminalBitmapNum(line.getStyle(column));
-                if (cellBitmapNum == bitmapNum) {
-                    line.setChar(column, ' ', TextStyle.NORMAL);
-                } else if (cellBitmapNum >= TERMINAL_BITMAP__NUM_START) {
-                    hasTerminalBitmap = true;
-                }
-            }
-            line.mHasTerminalBitmap = hasTerminalBitmap;
-        }
-    }
 
 
     public synchronized void clearTerminalBitmaps() {
@@ -752,6 +735,7 @@ public final class TerminalBuffer {
                                                                   int sourceWidth, int sourceHeight,
                                                                   int x, int y, int cellW, int cellH,
                                                                   int width, int height, boolean shouldPreserveAspectRatio,
+                                                                  boolean placeOnScreen,
                                                                   long kittyImageId, long kittyPlacementId) {
         int bitmapNum = getFreeTerminalBitmapNum();
         if (bitmapNum < TERMINAL_BITMAP__NUM_START) {
@@ -761,12 +745,13 @@ public final class TerminalBuffer {
 
         TerminalBitmap terminalBitmap = TerminalBitmap.buildForKittyImage(this, bitmapNum, format, image,
             pixelWidth, pixelHeight, sourceX, sourceY, sourceWidth, sourceHeight, x, y,
-            cellW, cellH, width, height, shouldPreserveAspectRatio);
+            cellW, cellH, width, height, shouldPreserveAspectRatio, placeOnScreen);
 
         if (terminalBitmap == null || terminalBitmap.getBitmap() == null) {
             return null;
         }
         terminalBitmap.setKittyImage(kittyImageId, kittyPlacementId);
+        terminalBitmap.setKittyUnicodePlaceholder(!placeOnScreen);
         return terminalBitmap;
     }
 
@@ -801,7 +786,7 @@ public final class TerminalBuffer {
                                                              long kittyImageId, long kittyPlacementId) {
         TerminalBitmap terminalBitmap = buildTerminalBitmapForKittyImage(format, image,
             pixelWidth, pixelHeight, sourceX, sourceY, sourceWidth, sourceHeight, x, y, cellW, cellH,
-            width, height, shouldPreserveAspectRatio, kittyImageId, kittyPlacementId);
+            width, height, shouldPreserveAspectRatio, true, kittyImageId, kittyPlacementId);
         if (terminalBitmap == null) {
             return new int[] {0, 0};
         }
@@ -907,8 +892,11 @@ public final class TerminalBuffer {
             }
         }
 
-        for(Integer bitmapStyle : bitmapsToRemove) {
-            mTerminalBitmaps.remove(bitmapStyle);
+        for(Integer bitmapNum : bitmapsToRemove) {
+            TerminalBitmap bitmap = mTerminalBitmaps.get(bitmapNum);
+            if (bitmap == null || !bitmap.usesKittyUnicodePlaceholders()) {
+                mTerminalBitmaps.remove(bitmapNum);
+            }
         }
     }
 
@@ -944,7 +932,10 @@ public final class TerminalBuffer {
         }
 
         for (Integer bitmapNum : bitmapNums) {
-            mTerminalBitmaps.remove(bitmapNum);
+            TerminalBitmap bitmap = mTerminalBitmaps.get(bitmapNum);
+            if (bitmap == null || !bitmap.usesKittyUnicodePlaceholders()) {
+                mTerminalBitmaps.remove(bitmapNum);
+            }
         }
     }
 
@@ -969,7 +960,9 @@ public final class TerminalBuffer {
 
         Set<Integer> bitmapNums = new HashSet<>(mTerminalBitmaps.keySet());
         for (Integer bitmapNum: bitmapNums) {
-            if (!bitmapsToKeep.contains(bitmapNum)) {
+            TerminalBitmap bitmap = mTerminalBitmaps.get(bitmapNum);
+            if (!bitmapsToKeep.contains(bitmapNum) &&
+                (bitmap == null || !bitmap.usesKittyUnicodePlaceholders())) {
                 mTerminalBitmaps.remove(bitmapNum);
             }
         }
