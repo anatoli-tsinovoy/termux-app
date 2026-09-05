@@ -43,8 +43,9 @@ android {
     defaultConfig {
         minSdkVersion project.properties.minSdkVersion.toInteger()
         targetSdkVersion project.properties.targetSdkVersion.toInteger()
-        versionCode 1010
-        versionName "0.118.3-kitty.8"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        versionCode 1011
+        versionName "0.118.3-kitty.9"
 
         if (appVersionName) versionName = appVersionName
         validateVersionName(versionName)
@@ -148,6 +149,8 @@ android {
 dependencies {
     testImplementation "junit:junit:4.13.2"
     testImplementation "org.robolectric:robolectric:4.10"
+    androidTestImplementation "androidx.test.ext:junit:1.1.5"
+    androidTestImplementation "androidx.test:runner:1.5.2"
     coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:1.1.5"
 }
 

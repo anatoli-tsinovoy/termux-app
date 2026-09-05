@@ -29,6 +29,7 @@ public class ShareUtils {
 
     private static final String LOG_TAG = "ShareUtils";
 
+
     /**
      * Open the system app chooser that allows the user to select which app to send the intent.
      *
@@ -108,9 +109,7 @@ public class ShareUtils {
         ClipboardManager clipboardManager = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
         if (clipboardManager == null) return;
 
-        clipboardManager.setPrimaryClip(ClipData.newPlainText(clipDataLabel,
-            DataUtils.getTruncatedCommandOutput(text, DataUtils.TRANSACTION_SIZE_LIMIT_IN_BYTES,
-                true, false, false)));
+        clipboardManager.setPrimaryClip(ClipData.newPlainText(clipDataLabel, text));
 
         if (toastString != null && !toastString.isEmpty())
             Logger.showToast(context, toastString, true);

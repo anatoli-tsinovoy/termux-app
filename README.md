@@ -131,9 +131,9 @@ Prior raw captures show that an additional tmux parser can discard raw `APC _G` 
 
 kitty.8 fixes direct placement at the lower screen boundary: the default placement scrolls to keep the full image and advances the cursor once, while `C=1` clips at the bottom and leaves the cursor stationary. The Bitmap/Canvas renderer now walks complete bitmap placeholder clusters, including combining marks and virtual `U=1` cells, without leaking marks or adjacent glyphs.
 
-Native OSC 52 semicolon detection now reaches the existing bounded 100 KiB encoded-payload limit. This is a limit on the encoded OSC 52 payload, not an unlimited clipboard.
+kitty.9 raises the OSC 52 encoded-stream limit to 2 MiB and removes Termux's extra clipboard truncation. Clipboard text is passed intact to Android's `ClipboardManager`, as with `termux-clipboard-set`; Android's own transaction limits still apply. Android copy failures are reported without terminating the terminal session. Generic share-intent limits are unchanged.
 
-The private clipboard tmux workaround is obsolete. A matching isolated dotfiles cutover is staged on branch `native-termux-clipboard`; install or update this APK first, then activate that cutover from a fresh native Termux shell. Do not remove the private workaround before the APK is installed.
+The private clipboard tmux workaround is unnecessary with kitty.9. The matching dotfiles cutover is on branch `native-termux-clipboard`; install or update this APK first, then activate that cutover from a fresh native Termux shell.
 
 File, temporary-file, and shared-memory transmission, zlib compression, animation, composition, arbitrary placeholder-addressed placement, z-index and pixel offsets are not supported.
 
@@ -143,13 +143,14 @@ Build the Android 7 package variant with:
 TERMUX_PACKAGE_VARIANT=apt-android-7 ./gradlew assembleDebug
 ```
 
-Run the Android Bitmap/Canvas instrumentation tests on a connected emulator with:
+Run the Android rendering and real clipboard readback tests on a connected emulator with:
 
 ```sh
 ./gradlew :terminal-view:connectedDebugAndroidTest
+./gradlew :app:connectedDebugAndroidTest
 ```
 
-These instrumentation tests use Android's real `BitmapFactory`, `Bitmap`, and `Canvas`; JVM unit tests use Android stubs and do not exercise this rendering path.
+The rendering tests use Android's real `BitmapFactory`, `Bitmap`, and `Canvas`; JVM unit tests use Android stubs. Clipboard tests feed the foreground Termux session and compare actual Android clipboard contents, including large-payload acceptance against direct `ClipboardManager` calls.
 
 The universal APK is `app/build/outputs/apk/debug/termux-app_apt-android-7-debug_universal.apk`. Because it uses the GitHub test key, it is a drop-in update only over a GitHub-signed Termux installation. It cannot update F-Droid: switching from F-Droid requires uninstalling all Termux and plugin apps, which removes their data unless it is backed up first.
 

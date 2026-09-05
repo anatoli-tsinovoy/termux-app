@@ -184,7 +184,12 @@ public class TermuxTerminalSessionActivityClient extends TermuxTerminalSessionCl
     public void onCopyTextToClipboard(@NonNull TerminalSession session, String text) {
         if (!mActivity.isVisible()) return;
 
-        ShareUtils.copyTextToClipboard(mActivity, text);
+        try {
+            ShareUtils.copyTextToClipboard(mActivity, text);
+        } catch (RuntimeException e) {
+            Logger.logStackTraceWithMessage(LOG_TAG, "Failed to copy text to clipboard", e);
+            mActivity.showToast("Failed to copy text to clipboard", true);
+        }
     }
 
     @Override
