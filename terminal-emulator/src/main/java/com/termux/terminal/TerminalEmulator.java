@@ -3269,7 +3269,7 @@ public final class TerminalEmulator {
             mCursorCol, mCursorRow, mCellWidthPixels, mCellHeightPixels,
             kittyImage.getWidthPixels(mCellWidthPixels), kittyImage.getHeightPixels(mCellHeightPixels),
             kittyImage.shouldPreserveAspectRatio(), !kittyImage.usesUnicodePlaceholders(),
-            kittyImage.getImageId(), kittyImage.getPlacementId());
+            kittyImage.shouldMoveCursor(), kittyImage.getImageId(), kittyImage.getPlacementId());
 
         // A null bitmap means the image could not be created. The builder does not add it to the
         // buffer, which leaves an existing placement with the same id untouched.
@@ -3574,8 +3574,7 @@ public final class TerminalEmulator {
      */
     void setOscTypeVariables() {
         if (mOscType >= 0) return;
-        if (mTerminalControlArgs.indexOf(":") < 0) return;
-
+        if (mTerminalControlArgs.indexOf(";") < 0) return;
         int value = -1;
         int argsLength = mTerminalControlArgs.length();
 

@@ -398,10 +398,11 @@ public class TerminalBitmap {
                                                     int width, int height, boolean shouldPreserveAspectRatio) {
         return buildForKittyImage(terminalBuffer, bitmapNum, format, image,
             pixelWidth, pixelHeight, sourceX, sourceY, sourceWidth, sourceHeight,
-            x, y, cellWidth, cellHeight, width, height, shouldPreserveAspectRatio, true);
+            x, y, cellWidth, cellHeight, width, height, shouldPreserveAspectRatio, true, true);
     }
 
-    /** Build a Kitty bitmap while explicitly choosing whether to install its cells on screen. */
+
+    /** Build a Kitty bitmap while explicitly choosing whether to install its cells on screen and scroll to fit. */
     static TerminalBitmap buildForKittyImage(TerminalBuffer terminalBuffer, int bitmapNum,
                                              int format, byte[] image,
                                              int pixelWidth, int pixelHeight,
@@ -409,7 +410,7 @@ public class TerminalBitmap {
                                              int sourceWidth, int sourceHeight,
                                              int x, int y, int cellWidth, int cellHeight,
                                              int width, int height, boolean shouldPreserveAspectRatio,
-                                             boolean placeOnScreen) {
+                                             boolean placeOnScreen, boolean scrollToFit) {
         try {
             if (image == null) {
                 Logger.logError(terminalBuffer.getClient(), LOG_TAG,
@@ -490,7 +491,7 @@ public class TerminalBitmap {
                     cellWidth, cellHeight);
             }
             TerminalBitmap terminalBitmap = buildOrThrow(terminalBuffer, bitmapNum, newBitmap, x, y,
-                cellWidth, cellHeight, placeOnScreen, false);
+                cellWidth, cellHeight, placeOnScreen, scrollToFit);
             if (terminalBitmap == null) {
                 return terminalBitmap;
             }
@@ -513,7 +514,7 @@ public class TerminalBitmap {
      *
      * @param canSubsample Whether the image may be subsampled while decoding it to save memory,
      *                     which requires the entire image to be displayed, check
-     *                     {@link #buildForKittyImage(TerminalBuffer, int, int, byte[], int, int, int, int, int, int, int, int, int, boolean, boolean)}
+     *                     {@link #buildForKittyImage(TerminalBuffer, int, int, byte[], int, int, int, int, int, int, int, int, int, int, int, int, boolean, boolean, boolean)}
      *                     for more info.
      * @param width The width in pixels the image is to be displayed in, or a value `< 1` if it is to
      *              be displayed at its own size, in which case it cannot be subsampled.

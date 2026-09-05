@@ -767,7 +767,7 @@ public final class TerminalBuffer {
                                                                   int sourceWidth, int sourceHeight,
                                                                   int x, int y, int cellW, int cellH,
                                                                   int width, int height, boolean shouldPreserveAspectRatio,
-                                                                  boolean placeOnScreen,
+                                                                  boolean placeOnScreen, boolean scrollToFit,
                                                                   long kittyImageId, long kittyPlacementId) {
         int bitmapNum = getFreeTerminalBitmapNum();
         if (bitmapNum < TERMINAL_BITMAP__NUM_START) {
@@ -777,7 +777,7 @@ public final class TerminalBuffer {
 
         TerminalBitmap terminalBitmap = TerminalBitmap.buildForKittyImage(this, bitmapNum, format, image,
             pixelWidth, pixelHeight, sourceX, sourceY, sourceWidth, sourceHeight, x, y,
-            cellW, cellH, width, height, shouldPreserveAspectRatio, placeOnScreen);
+            cellW, cellH, width, height, shouldPreserveAspectRatio, placeOnScreen, scrollToFit);
 
         if (terminalBitmap == null || terminalBitmap.getBitmap() == null) {
             return null;
@@ -818,7 +818,7 @@ public final class TerminalBuffer {
                                                              long kittyImageId, long kittyPlacementId) {
         TerminalBitmap terminalBitmap = buildTerminalBitmapForKittyImage(format, image,
             pixelWidth, pixelHeight, sourceX, sourceY, sourceWidth, sourceHeight, x, y, cellW, cellH,
-            width, height, shouldPreserveAspectRatio, true, kittyImageId, kittyPlacementId);
+            width, height, shouldPreserveAspectRatio, true, true, kittyImageId, kittyPlacementId);
         if (terminalBitmap == null) {
             return new int[] {0, 0};
         }

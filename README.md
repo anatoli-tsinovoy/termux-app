@@ -120,12 +120,20 @@ Version: 3
 
 This fork includes an experimental subset of the Kitty graphics protocol. It supports direct `APC _G` transmit, transmit-and-display, display, query, and delete actions with PNG, raw RGB, and raw RGBA data, including chunked transfers, image/placement IDs, cell-sized placement, cropping, quiet responses, and cursor-preserving display.
 
-Kitty output also works through tmux 3.3 or newer when `allow-passthrough` is enabled. The tmux transport is decoded as a bounded stream, and timg's `U=1` placeholder cells are matched by image-id color so split-pane redraws cannot turn them into text blocks. For example:
+Verified transport support is direct output and one tmux layer with `allow-passthrough` enabled. For example:
 
 ```sh
 tmux set -g allow-passthrough on
 timg -pk image.jpg
 ```
+
+Prior raw captures show that an additional tmux parser can discard raw `APC _G` bytes before they reach the terminal. A parser accepting a nested `DCS tmux;...` wrapper is not end-to-end support for nested tmux; explicitly nested tmux is unsupported.
+
+kitty.8 fixes direct placement at the lower screen boundary: the default placement scrolls to keep the full image and advances the cursor once, while `C=1` clips at the bottom and leaves the cursor stationary. The Bitmap/Canvas renderer now walks complete bitmap placeholder clusters, including combining marks and virtual `U=1` cells, without leaking marks or adjacent glyphs.
+
+Native OSC 52 semicolon detection now reaches the existing bounded 100 KiB encoded-payload limit. This is a limit on the encoded OSC 52 payload, not an unlimited clipboard.
+
+The private clipboard tmux workaround is obsolete. A matching isolated dotfiles cutover is staged on branch `native-termux-clipboard`; install or update this APK first, then activate that cutover from a fresh native Termux shell. Do not remove the private workaround before the APK is installed.
 
 File, temporary-file, and shared-memory transmission, zlib compression, animation, composition, arbitrary placeholder-addressed placement, z-index and pixel offsets are not supported.
 
@@ -134,6 +142,14 @@ Build the Android 7 package variant with:
 ```sh
 TERMUX_PACKAGE_VARIANT=apt-android-7 ./gradlew assembleDebug
 ```
+
+Run the Android Bitmap/Canvas instrumentation tests on a connected emulator with:
+
+```sh
+./gradlew :terminal-view:connectedDebugAndroidTest
+```
+
+These instrumentation tests use Android's real `BitmapFactory`, `Bitmap`, and `Canvas`; JVM unit tests use Android stubs and do not exercise this rendering path.
 
 The universal APK is `app/build/outputs/apk/debug/termux-app_apt-android-7-debug_universal.apk`. Because it uses the GitHub test key, it is a drop-in update only over a GitHub-signed Termux installation. It cannot update F-Droid: switching from F-Droid requires uninstalling all Termux and plugin apps, which removes their data unless it is backed up first.
 

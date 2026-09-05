@@ -126,6 +126,10 @@ public final class TerminalRenderer {
                     }
                     column += 1;
                     currentCharIndex += charsForCodePoint;
+                    while (currentCharIndex < charsUsedInLine && WcWidth.width(line, currentCharIndex) <= 0) {
+                        // A bitmap placeholder's combining marks belong to this cell, not the next.
+                        currentCharIndex += Character.isHighSurrogate(line[currentCharIndex]) ? 2 : 1;
+                    }
                     // The next text run starts after the cell of the bitmap, both in columns and in
                     // the characters of the line.
                     measuredWidthForRun = 0.f;
