@@ -3,3 +3,4 @@
 *.gradle    text eol=lf
 *.mk        text eol=lf
 *.sh        text eol=lf
+terminal-view/src/androidTest/assets/*.raw -text
